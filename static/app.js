@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.0.0.27';
+const VERSION = 'V1.0.0.28';
 const LIMITS = {
   'A (2%)': {ativa:4.00, reativa:4.00},
   'B (1%)': {ativa:1.30, reativa:2.60},
@@ -473,17 +473,42 @@ async function forgotPasswordSubmit(){
   try{const r=await publicApi('/api/auth/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});modal('Verifique seu e-mail',r.message||'Se o e-mail estiver cadastrado, enviaremos as instruções.');closeForgotPassword();}catch(e){modal('Recuperar senha',e.message)}
 }
 function parseRecoverySession(){
-  const hash=location.hash&&location.hash.startsWith('#')?new URLSearchParams(location.hash.slice(1)):null;
-  if(!hash)return false;
-  const type=hash.get('type')||'';const access=hash.get('access_token')||'';const refresh=hash.get('refresh_token')||'';
-  if(type==='recovery'&&access){authState={access_token:access,refresh_token:refresh};saveAuthState();history.replaceState(null,'',location.pathname+location.search);passwordChangeMode='recovery';return true;}
+  const rawHash=location.hash&&location.hash.startsWith('#')?location.hash.slice(1):'';
+  const hash=rawHash?new URLSearchParams(rawHash):null;
+  const query=new URLSearchParams(location.search||'');
+  if(hash){
+    const err=hash.get('error_description')||hash.get('error')||'';
+    if(err){window.__idlaudoRecoveryError=decodeURIComponent(err.replace(/\+/g,' '));return false;}
+    const type=hash.get('type')||query.get('type')||'';
+    const access=hash.get('access_token')||'';const refresh=hash.get('refresh_token')||'';
+    if(type==='recovery'&&access){
+      authState={access_token:access,refresh_token:refresh};saveAuthState();
+      history.replaceState(null,'',location.pathname+'?password_recovery=1');passwordChangeMode='recovery';return true;
+    }
+  }
   return false;
+}
+function recoveryDeepLinkFromBrowser(){
+  const raw=location.hash&&location.hash.startsWith('#')?location.hash.slice(1):'';
+  if(!raw)return false;
+  const p=new URLSearchParams(raw);
+  if((p.get('type')||'')!=='recovery'||!p.get('access_token'))return false;
+  if(nativeBridge())return false;
+  const ua=navigator.userAgent||'';if(!/Android/i.test(ua))return false;
+  const target='idlaudo://password-reset#'+raw;
+  try{location.href=target;return true;}catch{return false;}
+}
+function openRecoveryInApp(){
+  const raw=location.hash&&location.hash.startsWith('#')?location.hash.slice(1):'';
+  if(!raw){modal('Recuperar senha','O link não contém uma sessão de recuperação válida. Solicite um novo e-mail.');return;}
+  location.href='idlaudo://password-reset#'+raw;
 }
 function showChangePassword(mode='forced'){
   passwordChangeMode=mode;document.body.classList.remove('auth-booting');document.body.classList.add('auth-locked');
   $('authView')?.classList.add('hidden');$('forgotView')?.classList.add('hidden');$('resetPasswordView')?.classList.remove('hidden');
   const forced=mode==='forced';$('resetPasswordTitle').textContent=forced?'Troque sua senha inicial':'Criar nova senha';
   $('resetPasswordText').textContent=forced?'Por segurança, a senha temporária só pode ser usada neste primeiro acesso.':'Use pelo menos 8 caracteres.';
+  const openApp=$('openRecoveryAppBtn');if(openApp){openApp.classList.toggle('hidden',!(mode==='recovery'&&!nativeBridge()&&/Android/i.test(navigator.userAgent||'')));}
   setVal('newPassword','');setVal('newPasswordConfirm','');setTimeout(()=>$('newPassword')?.focus(),80);
 }
 function openChangePassword(){showChangePassword('settings');}
@@ -525,6 +550,8 @@ async function init(){
   authGateState='BOOT';
   await purgeLegacyUiCache();
   clearLegacyAuthState();
+  const recoveryRawHash=location.hash||'';
+  const triedDeepLink=recoveryDeepLinkFromBrowser();
   let recovery=parseRecoverySession();
   try{authConfig=await publicApi('/api/auth/config');}
   catch(e){showLoginView();showAuthError(`Não foi possível consultar o login. ${e.message}`);return;}
@@ -541,7 +568,7 @@ async function init(){
     }
     if(recovery){
       try{const r=await api('/api/auth/me');currentUser=r.user||null;showChangePassword('recovery');}
-      catch(e){clearAuthState();showLoginView();showAuthError('O link de redefinição expirou. Solicite um novo link.');}
+      catch(e){clearAuthState();showLoginView();showAuthError(window.__idlaudoRecoveryError||'O link de redefinição expirou. Solicite um novo link.');}
       return;
     }
     // V27: sessão anterior só pode ser reutilizada depois da biometria nativa.

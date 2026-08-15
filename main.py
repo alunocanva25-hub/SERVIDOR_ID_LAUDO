@@ -18,7 +18,7 @@ from storage_backend import (
     export_bridge, get_record, list_records, save_record, update_record_status,
     list_app_users, save_app_user, delete_app_user, get_app_setting, set_app_setting,
     list_notifications, backend_info, bootstrap_admin_info, get_app_user, bind_auth_profile,
-    mark_password_changed, set_app_user_active,
+    mark_password_changed, set_app_user_active, require_password_change_by_email,
 )
 import auth_service
 
@@ -224,9 +224,36 @@ def api_backend_info():
     return {"ok": True, **_runtime_backend_info(), "catalog": "POSTGRESQL" if USE_POSTGRES_CATALOG else "SQLITE"}
 
 
+def _apply_emergency_password_reset() -> dict:
+    """Aplica uma redefinição emergencial uma única vez por token definido no Render.
+
+    Nenhum segredo é retornado pela API. Troque o token para solicitar uma nova execução.
+    """
+    token = clean(os.environ.get("ID_LAUDO_EMERGENCY_RESET_TOKEN"))
+    email = clean(os.environ.get("ID_LAUDO_EMERGENCY_RESET_EMAIL")).lower()
+    password = str(os.environ.get("ID_LAUDO_EMERGENCY_RESET_PASSWORD") or "")
+    if not token and not email and not password:
+        return {"requested": False, "applied": False}
+    if not token or not email or len(password) < 8:
+        return {"requested": True, "applied": False, "reason": "incomplete_environment"}
+    marker_key = "auth.emergency_reset_token"
+    if str(get_app_setting(marker_key, "") or "") == token:
+        return {"requested": True, "applied": False, "reason": "already_applied"}
+    if not auth_service.admin_configured():
+        return {"requested": True, "applied": False, "reason": "admin_api_not_configured"}
+    try:
+        auth_service.admin_force_password_by_email(email, password)
+        require_password_change_by_email(email)
+        set_app_setting(marker_key, token)
+        return {"requested": True, "applied": True}
+    except auth_service.AuthServiceError as exc:
+        return {"requested": True, "applied": False, "reason": str(exc)}
+
+
 @app.get("/api/auth/config")
 def auth_config():
     status = auth_service.config_status()
+    emergency_reset = _apply_emergency_password_reset()
     admin = bootstrap_admin_info()
     bootstrap_auth = {"ready": False, "reason": "not_requested"}
     if status.get("requested") and status.get("admin_api"):
@@ -249,6 +276,7 @@ def auth_config():
         "password_reset": bool(status.get("configured")),
         "initial_admin": {"configured": bool(admin.get("configured")), "perfil": "ADMIN"},
         "bootstrap_reason": bootstrap_auth.get("reason", "") if not bootstrap_auth.get("ready") else "",
+        "emergency_reset": emergency_reset,
     }
 
 

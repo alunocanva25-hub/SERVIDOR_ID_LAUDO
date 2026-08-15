@@ -1,0 +1,27 @@
+ID LAUDO - SERVIDOR RENDER V1.0.0.28
+
+Mudancas principais:
+- Reset de senha abre o APK por deep link idlaudo://password-reset.
+- Tela de nova senha continua funcionando pelo navegador como contingencia.
+- Reset emergencial opcional via variaveis do Render, aplicado uma unica vez por TOKEN.
+
+SUPABASE - CONFIGURACAO OBRIGATORIA:
+Authentication > URL Configuration > Redirect URLs
+Adicionar: idlaudo://password-reset
+
+Variaveis normais permanecem:
+DATABASE_URL
+ID_LAUDO_CATALOG_BACKEND=postgres
+ID_LAUDO_AUTH_ENABLED=true
+SUPABASE_PUBLISHABLE_KEY
+SUPABASE_SERVICE_ROLE_KEY
+ID_LAUDO_BOOTSTRAP_ADMIN_EMAIL
+ID_LAUDO_BOOTSTRAP_ADMIN_PASSWORD
+ID_LAUDO_PUBLIC_URL
+
+RESET EMERGENCIAL (opcional, temporario):
+ID_LAUDO_EMERGENCY_RESET_EMAIL
+ID_LAUDO_EMERGENCY_RESET_PASSWORD
+ID_LAUDO_EMERGENCY_RESET_TOKEN
+
+Depois de recuperar o acesso, remova as 3 variaveis de emergencia.

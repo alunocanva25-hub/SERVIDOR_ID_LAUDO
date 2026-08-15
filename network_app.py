@@ -1,4 +1,4 @@
-"""Servidor de rede do ID LAUDO V1.0.0.27."""
+"""Servidor de rede do ID LAUDO V1.0.0.28."""
 from __future__ import annotations
 
 import socket
@@ -25,7 +25,7 @@ def local_ip() -> str:
 if __name__ == "__main__":
     ip = local_ip()
     print("=" * 68)
-    print(" ID LAUDO V1.0.0.27 - SERVIDOR PARA CELULAR / TABLET")
+    print(" ID LAUDO V1.0.0.28 - SERVIDOR PARA CELULAR / TABLET")
     print("=" * 68)
     print("Conecte o celular/tablet na MESMA REDE deste computador.")
     print()

@@ -97,7 +97,9 @@ def public_app_url() -> str:
 
 def reset_redirect_url() -> str:
     explicit = _clean(os.environ.get("ID_LAUDO_RESET_REDIRECT_URL"))
-    return explicit or (public_app_url() + "/?password_recovery=1")
+    # V1.0.0.28: por padrão o Supabase devolve o reset diretamente ao APK.
+    # Para usar somente o navegador, defina ID_LAUDO_RESET_REDIRECT_URL com uma URL HTTPS.
+    return explicit or "idlaudo://password-reset"
 
 
 def _headers(key: str, token: str = "") -> dict[str, str]:
@@ -264,6 +266,19 @@ def admin_delete_user(auth_user_id: str, *, soft: bool = True) -> None:
         "DELETE", f"/auth/v1/admin/users/{auth_user_id}",
         json_data={"should_soft_delete": bool(soft)},
     )
+
+
+def admin_force_password_by_email(email: str, password: str) -> dict:
+    email = _clean(email).lower()
+    if not email:
+        raise AuthServiceError("Informe o e-mail do usuário.", 400)
+    if len(str(password or "")) < 8:
+        raise AuthServiceError("A senha temporária precisa ter pelo menos 8 caracteres.", 400)
+    user = admin_find_user_by_email(email)
+    if not user:
+        raise AuthServiceError("Usuário não encontrado no Supabase Auth.", 404)
+    updated = admin_update_user(str(user.get("id")), password=str(password))
+    return updated or user
 
 
 def random_temporary_password() -> str:

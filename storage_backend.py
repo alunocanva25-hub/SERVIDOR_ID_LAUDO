@@ -27,6 +27,9 @@ else:
     def mark_password_changed(profile_id: int) -> None:
         return None
 
+    def require_password_change_by_email(email: str) -> None:
+        return None
+
     def set_app_user_active(user_id: int, active: bool):
         user = get_app_user(user_id)
         if not user:

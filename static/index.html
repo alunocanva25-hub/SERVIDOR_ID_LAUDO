@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0a3b62">
-  <title>ID LAUDO V1.0.0.27</title>
+  <title>ID LAUDO V1.0.0.28</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/assets/ID_LAUDO.png">
-  <link rel="stylesheet" href="/static/style.css?v=1.0.0.27">
+  <link rel="stylesheet" href="/static/style.css?v=1.0.0.28">
 </head>
 <body data-ui-mode="app" class="auth-booting">
 <section id="authView" class="authScreen">
@@ -44,6 +44,7 @@
       <div class="field"><label>Nova senha</label><div class="passwordField"><input id="newPassword" type="password" autocomplete="new-password"><button type="button" class="eyeBtn" onclick="togglePassword('newPassword',this)">◉</button></div></div>
       <div class="field"><label>Confirmar nova senha</label><div class="passwordField"><input id="newPasswordConfirm" type="password" autocomplete="new-password"><button type="button" class="eyeBtn" onclick="togglePassword('newPasswordConfirm',this)">◉</button></div></div>
       <button class="primary authPrimary" type="submit">SALVAR NOVA SENHA</button>
+      <button id="openRecoveryAppBtn" class="secondary authPrimary hidden" type="button" onclick="openRecoveryInApp()">ABRIR NO APP</button>
     </form>
   </div>
 </section>
@@ -375,6 +376,6 @@
 
 <div id="toast" class="toast"></div>
 <div id="modal" class="modal hidden"><div class="modalBox"><h3 id="modalTitle">Aviso</h3><p id="modalText"></p><div id="modalActions" class="modalActions"></div></div></div>
-<script src="/static/app.js?v=1.0.0.27"></script>
+<script src="/static/app.js?v=1.0.0.28"></script>
 </body>
 </html>
