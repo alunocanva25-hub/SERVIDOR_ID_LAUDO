@@ -1,0 +1,43 @@
+ID LAUDO V1.0.0.25 - RENDER + SUPABASE AUTH
+================================================
+
+NOVIDADES
+- Tela de login por e-mail/senha.
+- Supabase Auth integrado ao Render/FastAPI.
+- Administrador principal vinculado ao e-mail configurado.
+- Senha inicial do administrador configurada SOMENTE no Render.
+- Troca obrigatoria da senha inicial no primeiro acesso.
+- "Esqueceu sua senha?" com e-mail de recuperacao.
+- ADMIN pode criar, editar, suspender, reativar, enviar reset e excluir usuarios.
+- OPERADOR nao ve os cards administrativos de usuarios/campos.
+
+VARIAVEIS DO RENDER
+Mantenha:
+DATABASE_URL = sua connection string PostgreSQL/Supabase
+ID_LAUDO_CATALOG_BACKEND = postgres
+
+Adicione:
+ID_LAUDO_AUTH_ENABLED = true
+SUPABASE_PUBLISHABLE_KEY = chave Publishable do projeto Supabase
+SUPABASE_SECRET_KEY = chave Secret do projeto Supabase
+ID_LAUDO_BOOTSTRAP_ADMIN_EMAIL = dayvisant4@gmail.com
+ID_LAUDO_BOOTSTRAP_ADMIN_PASSWORD = admin123
+ID_LAUDO_PUBLIC_URL = https://id-laudo-api.onrender.com
+
+IMPORTANTE
+- SUPABASE_SECRET_KEY nunca deve ir para o APK ou JavaScript. Ela fica apenas no Render.
+- admin123 e apenas a senha temporaria de PRIMEIRO ACESSO. O app exige troca apos entrar.
+- Depois que o usuario ADMIN for criado, a variavel de senha de bootstrap pode ser removida do Render.
+
+SUPABASE > AUTH > URL CONFIGURATION
+Site URL:
+https://id-laudo-api.onrender.com
+
+Redirect URLs:
+https://id-laudo-api.onrender.com/**
+
+Depois do deploy, teste:
+/api/health
+/api/auth/config
+
+/api/auth/config deve retornar requested/configured/enabled = true.

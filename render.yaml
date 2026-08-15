@@ -11,6 +11,14 @@ services:
       - key: ID_LAUDO_CATALOG_BACKEND
         value: postgres
       - key: ID_LAUDO_AUTH_ENABLED
-        value: "false"
+        value: "true"
       - key: ID_LAUDO_BOOTSTRAP_ADMIN_EMAIL
         value: "dayvisant4@gmail.com"
+      - key: ID_LAUDO_BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: ID_LAUDO_PUBLIC_URL
+        value: "https://id-laudo-api.onrender.com"

@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.24"
+APP_VERSION = "1.0.0.25"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -169,6 +169,7 @@ def save_record(
     bridge_id: str = "",
     status_message: str | None = None,
     remote_laudo_numero: str | None = None,
+    created_by_profile_id: int | None = None,
 ) -> dict:
     ensure_db()
     status = normalize_status(status)
@@ -220,7 +221,7 @@ def row_to_dict(row) -> dict:
     return d
 
 
-def list_records(limit: int = 100) -> list[dict]:
+def list_records(limit: int = 100, profile_id: int | None = None, include_all: bool = True) -> list[dict]:
     ensure_db()
     with sqlite3.connect(db_path()) as con:
         con.row_factory = sqlite3.Row
@@ -228,7 +229,7 @@ def list_records(limit: int = 100) -> list[dict]:
     return [row_to_dict(r) for r in rows]
 
 
-def get_record(record_id: int) -> dict | None:
+def get_record(record_id: int, profile_id: int | None = None, include_all: bool = True) -> dict | None:
     ensure_db()
     with sqlite3.connect(db_path()) as con:
         con.row_factory = sqlite3.Row
@@ -236,7 +237,7 @@ def get_record(record_id: int) -> dict | None:
     return row_to_dict(row) if row else None
 
 
-def delete_record(record_id: int) -> bool:
+def delete_record(record_id: int, profile_id: int | None = None, include_all: bool = True) -> bool:
     ensure_db()
     with sqlite3.connect(db_path()) as con:
         cur = con.execute("DELETE FROM espelhos WHERE id=?", (int(record_id),))
@@ -381,7 +382,7 @@ def safe_component(value: object, fallback: str = "SEM-DADO") -> str:
     return text or fallback
 
 
-def export_bridge(data: dict, record_id: int | None = None) -> dict:
+def export_bridge(data: dict, record_id: int | None = None, created_by_profile_id: int | None = None) -> dict:
     payload = dict(data or {})
     existing = get_record(int(record_id)) if record_id else None
     bridge_id = str((existing or {}).get("bridge_id") or "") or new_bridge_id()

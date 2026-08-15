@@ -4,12 +4,48 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0a3b62">
-  <title>ID LAUDO V1.0.0.24</title>
+  <title>ID LAUDO V1.0.0.25</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/assets/ID_LAUDO.png">
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body data-ui-mode="app">
+<body data-ui-mode="app" class="auth-booting">
+<section id="authView" class="authScreen">
+  <div class="authCard">
+    <div class="authBrand"><img src="/static/assets/ID_LAUDO.png" alt="ID LAUDO"><div><h1>ID LAUDO</h1><span>Acesso seguro</span></div></div>
+    <div class="authIntro"><span class="eyebrow">ENTRAR</span><h2>Bem-vindo</h2><p>Use seu e-mail e senha para acessar seus laudos.</p></div>
+    <form class="authForm" onsubmit="loginSubmit();return false;">
+      <div class="field"><label>E-mail</label><input id="loginEmail" type="email" inputmode="email" autocomplete="username" placeholder="seuemail@empresa.com"></div>
+      <div class="field"><label>Senha</label><div class="passwordField"><input id="loginPassword" type="password" autocomplete="current-password" placeholder="••••••••"><button type="button" class="eyeBtn" onclick="togglePassword('loginPassword',this)" aria-label="Mostrar senha">◉</button></div></div>
+      <button id="loginBtn" class="primary authPrimary" type="submit">ENTRAR</button>
+      <button class="linkButton" type="button" onclick="openForgotPassword()">Esqueceu sua senha?</button>
+    </form>
+    <div id="authSetupBox" class="authSetup hidden"></div>
+    <div id="authError" class="authError hidden"></div>
+  </div>
+</section>
+
+<section id="forgotView" class="authScreen hidden">
+  <div class="authCard">
+    <button class="authBack" type="button" onclick="closeForgotPassword()">← Voltar</button>
+    <div class="authIntro"><span class="eyebrow">RECUPERAR ACESSO</span><h2>Esqueceu sua senha?</h2><p>Informe seu e-mail. O ID LAUDO enviará um link para criar uma nova senha.</p></div>
+    <form class="authForm" onsubmit="forgotPasswordSubmit();return false;">
+      <div class="field"><label>E-mail</label><input id="forgotEmail" type="email" inputmode="email" autocomplete="email" placeholder="seuemail@empresa.com"></div>
+      <button class="primary authPrimary" type="submit">ENVIAR LINK</button>
+    </form>
+  </div>
+</section>
+
+<section id="resetPasswordView" class="authScreen hidden">
+  <div class="authCard">
+    <div class="authIntro"><span class="eyebrow">SEGURANÇA</span><h2 id="resetPasswordTitle">Criar nova senha</h2><p id="resetPasswordText">Use pelo menos 8 caracteres.</p></div>
+    <form class="authForm" onsubmit="changePasswordSubmit();return false;">
+      <div class="field"><label>Nova senha</label><div class="passwordField"><input id="newPassword" type="password" autocomplete="new-password"><button type="button" class="eyeBtn" onclick="togglePassword('newPassword',this)">◉</button></div></div>
+      <div class="field"><label>Confirmar nova senha</label><div class="passwordField"><input id="newPasswordConfirm" type="password" autocomplete="new-password"><button type="button" class="eyeBtn" onclick="togglePassword('newPasswordConfirm',this)">◉</button></div></div>
+      <button class="primary authPrimary" type="submit">SALVAR NOVA SENHA</button>
+    </form>
+  </div>
+</section>
 <header class="topbar">
   <div class="brand">
     <img src="/static/assets/ID_LAUDO.png" alt="ID LAUDO">
@@ -111,17 +147,32 @@
           <div><span>Catálogo</span><b id="cfgCatalogMode">SQLite</b></div>
           <div><span>Login</span><b id="cfgAuthMode">ADIADO</b></div>
         </div>
-        <div class="configHint">A arquitetura Render + Supabase/PostgreSQL já está preparada. O login será ativado somente quando o app estiver aprovado.</div>
+        <div class="configHint">Login online pelo Supabase Auth. A senha não fica gravada no banco do ID LAUDO.</div>
       </div>
     </div>
 
-    <div class="settingsCard collapsible" data-settings-card="users">
+    <div class="settingsCard collapsible" data-settings-card="account">
+      <button class="settingsCardHead" type="button" onclick="toggleSettingsCard(this)"><div><span class="settingsIcon">●</span><div><b>Conta e segurança</b><small>Sessão, perfil e senha</small></div></div><span class="collapseChevron">⌄</span></button>
+      <div class="settingsCardBody">
+        <div class="accountSummary">
+          <div><span>Usuário</span><b id="cfgCurrentName">—</b></div>
+          <div><span>E-mail</span><b id="cfgCurrentEmail">—</b></div>
+          <div><span>Perfil</span><b id="cfgCurrentRole">—</b></div>
+        </div>
+        <div class="settingsServerActions accountActions">
+          <button class="secondary" type="button" onclick="openChangePassword()">ALTERAR SENHA</button>
+          <button class="danger" type="button" onclick="logoutApp()">SAIR DA CONTA</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="adminUsersCard" class="settingsCard collapsible" data-settings-card="users">
       <button class="settingsCardHead" type="button" onclick="toggleSettingsCard(this)"><div><span class="settingsIcon">♙</span><div><b>Usuários</b><small>Perfis ADMIN e OPERADOR</small></div></div><span class="collapseChevron">⌄</span></button>
       <div class="settingsCardBody">
         <div class="settingsGrid userCreateGrid">
           <div class="field"><label>Nome</label><input id="cfgUserName" autocomplete="off"></div>
           <div class="field"><label>Usuário</label><input id="cfgUserLogin" autocomplete="off"></div>
-          <div class="field"><label>E-mail</label><input id="cfgUserEmail" type="email" inputmode="email" autocomplete="off" placeholder="usuario@empresa.com"></div>
+          <div class="field"><label>E-mail *</label><input id="cfgUserEmail" type="email" inputmode="email" autocomplete="off" placeholder="usuario@empresa.com"><small>O usuário receberá um link para criar/redefinir a senha.</small></div>
           <div class="field"><label>Perfil</label><select id="cfgUserRole"><option value="OPERADOR">OPERADOR</option><option value="ADMIN">ADMIN</option></select></div>
           <button class="primary cfgAddUser" type="button" onclick="saveConfigUser()">ADICIONAR</button>
         </div>
@@ -129,7 +180,7 @@
       </div>
     </div>
 
-    <div class="settingsCard collapsible" data-settings-card="form">
+    <div id="adminFormCard" class="settingsCard collapsible" data-settings-card="form">
       <button class="settingsCardHead" type="button" onclick="toggleSettingsCard(this)"><div><span class="settingsIcon">▤</span><div><b>Novo Laudo</b><small>Campos e cards exibidos no preenchimento</small></div></div><span class="collapseChevron">⌄</span></button>
       <div class="settingsCardBody">
         <div class="settingsToolbar"><span>Escolha o que aparece em Criar Laudo.</span><button class="secondary miniAction" type="button" onclick="resetFormVisibility()">REEXIBIR TUDO</button></div>
@@ -303,7 +354,7 @@
           <div id="reviewGrid" class="reviewGrid"></div>
           <div id="reviewWarnings" class="reviewWarnings"></div>
         </div>
-        <div class="finishCard"><div><span class="eyebrow">PONTE ID CAMPS</span><h3>Pronto para finalizar?</h3><p>Gera o JSON para envio ao ID CAMPS.</p></div><button class="primary big" onclick="exportBridge()">FINALIZAR E GERAR JSON</button></div>
+        <div class="finishCard"><div><span class="eyebrow">PONTE ID CAMPS</span><h3>Pronto para finalizar?</h3><p>Envia o espelho para revisão no ID CAMPS.</p></div><button class="primary big" onclick="exportBridge()">FINALIZAR</button></div>
       </section>
     </form>
 

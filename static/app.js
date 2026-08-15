@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.0.0.24';
+const VERSION = 'V1.0.0.25';
 const LIMITS = {
   'A (2%)': {ativa:4.00, reativa:4.00},
   'B (1%)': {ativa:1.30, reativa:2.60},
@@ -40,6 +40,12 @@ let autoSaving = false;
 let lastCatalogRefresh = 0;
 let deferredInstallPrompt = null;
 let toiManuallyEdited = false;
+let authConfig = {requested:false,configured:false,enabled:false,admin_api:false};
+let authState = {access_token:'',refresh_token:''};
+let currentUser = null;
+let appStarted = false;
+let passwordChangeMode = 'forced';
+const AUTH_STORAGE_KEY = 'idlaudo.auth.v25';
 
 function getUiMode(){ return 'APP'; }
 
@@ -106,6 +112,7 @@ function onHistorySearch(v){
 function clearHistorySearch(){ historySearchTerm=''; setVal('historySearch',''); $('historySearchClear')?.classList.add('hidden'); renderHistory(); }
 
 function openSettings(server='',serverMode=''){
+  if(document.body.classList.contains('auth-locked')){modal('Configurações','Entre no ID LAUDO para acessar as configurações.');return;}
   if($('settingsView') && !$('settingsView').classList.contains('hidden')) return;
   settingsPreviousTab=activeMainTab;
   settingsReturnEditor=!!($('editorView') && !$('editorView').classList.contains('hidden'));
@@ -217,27 +224,54 @@ function renderBackendInfo(){
   if($('cfgBackendMode')) $('cfgBackendMode').textContent=b.mode||'LOCAL';
   if($('cfgBackendDb')) $('cfgBackendDb').textContent=b.database||'SQLite';
   if($('cfgCatalogMode')) $('cfgCatalogMode').textContent=bootstrap?.source?.includes('POSTGRESQL')?'PostgreSQL':'SQLite';
-  if($('cfgAuthMode')) $('cfgAuthMode').textContent=b.auth||'ADIADO';
+  if($('cfgAuthMode')) $('cfgAuthMode').textContent=b.auth||'CONFIGURAR';
+}
+function renderAccountInfo(){
+  if($('cfgCurrentName')) $('cfgCurrentName').textContent=currentUser?.nome||currentUser?.usuario||'—';
+  if($('cfgCurrentEmail')) $('cfgCurrentEmail').textContent=currentUser?.email||'—';
+  if($('cfgCurrentRole')) $('cfgCurrentRole').textContent=currentUser?.perfil||'—';
+}
+function applySettingsPermissions(){
+  const admin=String(currentUser?.perfil||'').toUpperCase()==='ADMIN' || !authConfig.requested;
+  $('adminUsersCard')?.classList.toggle('hidden',!admin);
+  $('adminFormCard')?.classList.toggle('hidden',!admin);
 }
 async function refreshSettingsData(){
-  try{const r=await api('/api/config');appConfig.users=r.users||[];appConfig.form_visibility=r.form_visibility||{};appConfig.backend=r.backend||{};renderConfigUsers();renderFormConfig();renderBackendInfo();applyFormVisibility();restoreSettingsCollapse();}catch(e){toast(e.message)}
+  try{const r=await api('/api/config');appConfig.users=r.users||[];appConfig.form_visibility=r.form_visibility||{};appConfig.backend=r.backend||{};if(r.current_user)currentUser=r.current_user;renderConfigUsers();renderFormConfig();renderBackendInfo();renderAccountInfo();applySettingsPermissions();applyFormVisibility();restoreSettingsCollapse();}catch(e){toast(e.message)}
 }
 async function loadAppConfig(){
-  try{const r=await api('/api/config');appConfig.users=r.users||[];appConfig.form_visibility=r.form_visibility||{};appConfig.backend=r.backend||{};}catch{appConfig={users:[],form_visibility:{},backend:{}}}
-  renderBackendInfo();
-  applyFormVisibility();
+  try{const r=await api('/api/config');appConfig.users=r.users||[];appConfig.form_visibility=r.form_visibility||{};appConfig.backend=r.backend||{};if(r.current_user)currentUser=r.current_user;}catch{appConfig={users:[],form_visibility:{},backend:{}}}
+  renderBackendInfo();renderAccountInfo();applySettingsPermissions();applyFormVisibility();
 }
 function renderConfigUsers(){
   const box=$('configUsersList');if(!box)return;box.innerHTML='';
   if(!appConfig.users.length){box.innerHTML='<div class="configEmpty">Nenhum usuário cadastrado.</div>';return;}
-  appConfig.users.forEach(u=>{const row=document.createElement('div');row.className='configUserRow';row.innerHTML=`<div><b>${esc(u.nome)}</b><span>${esc(u.usuario)}${u.email?' • '+esc(u.email):''}</span></div><span class="roleBadge ${u.perfil==='ADMIN'?'admin':''}">${esc(u.perfil)}</span><div class="configUserActions"><button class="secondary" type="button">EDITAR</button><button class="danger" type="button">EXCLUIR</button></div>`;const bs=row.querySelectorAll('button');bs[0].onclick=()=>editConfigUser(u.id);bs[1].onclick=()=>confirmBox('Excluir usuário',`Excluir ${u.nome}?`,()=>deleteConfigUser(u.id));box.appendChild(row);});
+  appConfig.users.forEach(u=>{
+    const active=!!Number(u.ativo);
+    const row=document.createElement('div');row.className=`configUserRow ${active?'':'userSuspended'}`;
+    row.innerHTML=`<div><b>${esc(u.nome)}</b><span>${esc(u.usuario)}${u.email?' • '+esc(u.email):''}</span><small>${active?'ATIVO':'SUSPENSO'}</small></div><span class="roleBadge ${u.perfil==='ADMIN'?'admin':''}">${esc(u.perfil)}</span><div class="configUserActions"><button class="secondary" type="button">EDITAR</button><button class="secondary" type="button">${active?'SUSPENDER':'REATIVAR'}</button><button class="secondary" type="button">RESET SENHA</button><button class="danger" type="button">EXCLUIR</button></div>`;
+    const bs=row.querySelectorAll('button');
+    bs[0].onclick=()=>editConfigUser(u.id);
+    bs[1].onclick=()=>confirmBox(active?'Suspender usuário':'Reativar usuário',active?`Suspender o acesso de ${u.nome}?`:`Reativar o acesso de ${u.nome}?`,()=>suspendConfigUser(u.id,active));
+    bs[2].onclick=()=>confirmBox('Redefinir senha',`Enviar um link de redefinição para ${u.email||u.nome}?`,()=>resetConfigUserPassword(u.id));
+    bs[3].onclick=()=>confirmBox('Excluir usuário',`Excluir ${u.nome}? O acesso será removido do Supabase Auth.`,()=>deleteConfigUser(u.id));
+    box.appendChild(row);
+  });
 }
 function editConfigUser(id){const u=appConfig.users.find(x=>Number(x.id)===Number(id));if(!u)return;editingConfigUserId=u.id;setVal('cfgUserName',u.nome);setVal('cfgUserLogin',u.usuario);setVal('cfgUserEmail',u.email||'');setVal('cfgUserRole',u.perfil);const b=document.querySelector('.cfgAddUser');if(b)b.textContent='SALVAR';}
 function resetConfigUserForm(){editingConfigUserId=null;setVal('cfgUserName','');setVal('cfgUserLogin','');setVal('cfgUserEmail','');setVal('cfgUserRole','OPERADOR');const b=document.querySelector('.cfgAddUser');if(b)b.textContent='ADICIONAR';}
 async function saveConfigUser(){
-  const nome=val('cfgUserName'),usuario=val('cfgUserLogin'),email=val('cfgUserEmail'),perfil=val('cfgUserRole')||'OPERADOR';if(!nome||!usuario){modal('Usuários','Preencha Nome e Usuário.');return;}
-  try{await api('/api/config/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:editingConfigUserId,data:{nome,usuario,email,perfil,ativo:true}})});resetConfigUserForm();await refreshSettingsData();toast('Usuário salvo.');}catch(e){modal('Usuários',e.message)}
+  const nome=val('cfgUserName'),usuario=val('cfgUserLogin'),email=val('cfgUserEmail'),perfil=val('cfgUserRole')||'OPERADOR';
+  if(!nome||!usuario||!email){modal('Usuários','Preencha Nome, Usuário e E-mail.');return;}
+  const existing=editingConfigUserId?appConfig.users.find(x=>Number(x.id)===Number(editingConfigUserId)):null;
+  try{
+    const r=await api('/api/config/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:editingConfigUserId,data:{nome,usuario,email,perfil,ativo:existing?!!Number(existing.ativo):true}})});
+    const created=!editingConfigUserId;resetConfigUserForm();await refreshSettingsData();
+    if(created)modal('Usuário criado',r.reset_sent?'O usuário foi criado e recebeu um e-mail para definir a senha.':'Usuário criado. Se o e-mail não chegar, use RESET SENHA para enviar um novo link.');else toast('Usuário salvo.');
+  }catch(e){modal('Usuários',e.message)}
 }
+async function suspendConfigUser(id,currentlyActive){try{await api(`/api/config/users/${id}/suspend`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({suspended:!!currentlyActive})});await refreshSettingsData();toast(currentlyActive?'Usuário suspenso.':'Usuário reativado.');}catch(e){modal('Usuários',e.message)}}
+async function resetConfigUserPassword(id){try{await api(`/api/config/users/${id}/reset-password`,{method:'POST'});modal('Redefinição enviada','Se o e-mail estiver disponível, o usuário receberá um link para criar uma nova senha.');}catch(e){modal('Usuários',e.message)}}
 async function deleteConfigUser(id){try{await api(`/api/config/users/${id}`,{method:'DELETE'});await refreshSettingsData();toast('Usuário excluído.');}catch(e){modal('Usuários',e.message)}}
 window.addEventListener('beforeinstallprompt',e=>{
   e.preventDefault(); deferredInstallPrompt=e;
@@ -309,9 +343,119 @@ function toast(text){ const t=$('toast'); t.textContent=text; t.classList.add('s
 function modal(title,text,buttons=[['OK','primary',()=>closeModal()]]){ $('modalTitle').textContent=title; $('modalText').textContent=text; const a=$('modalActions'); a.innerHTML=''; buttons.forEach(([label,cls,fn])=>{const b=document.createElement('button');b.textContent=label;b.className=cls;b.onclick=fn;a.appendChild(b);}); $('modal').classList.remove('hidden'); }
 function closeModal(){ $('modal').classList.add('hidden'); }
 function confirmBox(title,text,onYes){ modal(title,text,[['CANCELAR','secondary',closeModal],['CONFIRMAR','primary',()=>{closeModal();onYes();}]]); }
-async function api(url, options={}){ const r=await fetch(url,{cache:'no-store',...options}); let j={}; try{j=await r.json();}catch{} if(!r.ok) throw new Error(j.detail || j.message || 'Falha na operação.'); return j; }
-
+async function publicApi(url, options={}){
+  const r=await fetch(url,{cache:'no-store',...options}); let j={};
+  try{j=await r.json();}catch{}
+  if(!r.ok) throw new Error(j.detail || j.message || 'Falha na operação.');
+  return j;
+}
+function saveAuthState(){
+  try{localStorage.setItem(AUTH_STORAGE_KEY,JSON.stringify(authState||{}));}catch{}
+}
+function loadAuthState(){
+  try{const x=JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)||'{}');authState={access_token:x.access_token||'',refresh_token:x.refresh_token||''};}catch{authState={access_token:'',refresh_token:''};}
+}
+function clearAuthState(){authState={access_token:'',refresh_token:''};currentUser=null;try{localStorage.removeItem(AUTH_STORAGE_KEY);}catch{}}
+async function refreshAuthSession(){
+  if(!authState.refresh_token)return false;
+  try{
+    const r=await publicApi('/api/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:authState.refresh_token})});
+    authState={access_token:r.session?.access_token||'',refresh_token:r.session?.refresh_token||authState.refresh_token};currentUser=r.user||currentUser;saveAuthState();return !!authState.access_token;
+  }catch{clearAuthState();return false;}
+}
+async function api(url, options={}){
+  const headers={...(options.headers||{})};
+  if(authState.access_token) headers.Authorization=`Bearer ${authState.access_token}`;
+  const r=await fetch(url,{cache:'no-store',...options,headers}); let j={}; try{j=await r.json();}catch{}
+  if(r.status===401 && authState.refresh_token && !options.__retried && !url.startsWith('/api/auth/')){
+    const ok=await refreshAuthSession();
+    if(ok)return api(url,{...options,__retried:true});
+  }
+  if(!r.ok) throw new Error(j.detail || j.message || 'Falha na operação.'); return j;
+}
+function togglePassword(id,btn){const el=$(id);if(!el)return;el.type=el.type==='password'?'text':'password';if(btn)btn.textContent=el.type==='password'?'◉':'○';}
+function showAuthError(text=''){const box=$('authError');if(!box)return;box.textContent=text;box.classList.toggle('hidden',!text);}
+function showLoginView(){
+  document.body.classList.remove('auth-booting');document.body.classList.add('auth-locked');
+  $('authView')?.classList.remove('hidden');$('forgotView')?.classList.add('hidden');$('resetPasswordView')?.classList.add('hidden');
+  showAuthError('');setTimeout(()=>$('loginEmail')?.focus(),80);
+}
+function unlockApp(){document.body.classList.remove('auth-booting','auth-locked');$('authView')?.classList.add('hidden');$('forgotView')?.classList.add('hidden');$('resetPasswordView')?.classList.add('hidden');}
+function openForgotPassword(){setVal('forgotEmail',val('loginEmail'));$('authView')?.classList.add('hidden');$('forgotView')?.classList.remove('hidden');setTimeout(()=>$('forgotEmail')?.focus(),80);}
+function closeForgotPassword(){$('forgotView')?.classList.add('hidden');$('authView')?.classList.remove('hidden');}
+async function forgotPasswordSubmit(){
+  const email=val('forgotEmail');if(!email){modal('Recuperar senha','Informe seu e-mail.');return;}
+  try{const r=await publicApi('/api/auth/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});modal('Verifique seu e-mail',r.message||'Se o e-mail estiver cadastrado, enviaremos as instruções.');closeForgotPassword();}catch(e){modal('Recuperar senha',e.message)}
+}
+function parseRecoverySession(){
+  const hash=location.hash&&location.hash.startsWith('#')?new URLSearchParams(location.hash.slice(1)):null;
+  if(!hash)return false;
+  const type=hash.get('type')||'';const access=hash.get('access_token')||'';const refresh=hash.get('refresh_token')||'';
+  if(type==='recovery'&&access){authState={access_token:access,refresh_token:refresh};saveAuthState();history.replaceState(null,'',location.pathname+location.search);passwordChangeMode='recovery';return true;}
+  return false;
+}
+function showChangePassword(mode='forced'){
+  passwordChangeMode=mode;document.body.classList.remove('auth-booting');document.body.classList.add('auth-locked');
+  $('authView')?.classList.add('hidden');$('forgotView')?.classList.add('hidden');$('resetPasswordView')?.classList.remove('hidden');
+  const forced=mode==='forced';$('resetPasswordTitle').textContent=forced?'Troque sua senha inicial':'Criar nova senha';
+  $('resetPasswordText').textContent=forced?'Por segurança, a senha temporária só pode ser usada neste primeiro acesso.':'Use pelo menos 8 caracteres.';
+  setVal('newPassword','');setVal('newPasswordConfirm','');setTimeout(()=>$('newPassword')?.focus(),80);
+}
+function openChangePassword(){showChangePassword('settings');}
+async function changePasswordSubmit(){
+  const p1=val('newPassword'),p2=val('newPasswordConfirm');
+  if(p1.length<8){modal('Nova senha','Use pelo menos 8 caracteres.');return;}
+  if(p1!==p2){modal('Nova senha','As senhas digitadas não são iguais.');return;}
+  try{
+    await api('/api/auth/change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p1})});
+    if(currentUser)currentUser.must_change_password=false;
+    const mode=passwordChangeMode;unlockApp();
+    if(!appStarted)await startApp(); else {await loadAppConfig();renderAccountInfo();}
+    modal('Senha atualizada','Sua nova senha foi salva com sucesso.');
+    if(mode==='settings')setTimeout(()=>openSettings(),100);
+  }catch(e){modal('Nova senha',e.message)}
+}
+async function loginSubmit(){
+  const email=val('loginEmail'),password=val('loginPassword');if(!email||!password){showAuthError('Informe e-mail e senha.');return;}
+  const btn=$('loginBtn');if(btn){btn.disabled=true;btn.textContent='ENTRANDO...';}showAuthError('');
+  try{
+    const r=await publicApi('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+    authState={access_token:r.session?.access_token||'',refresh_token:r.session?.refresh_token||''};currentUser=r.user||null;saveAuthState();setVal('loginPassword','');
+    if(currentUser?.must_change_password){showChangePassword('forced');return;}
+    unlockApp(); if(!appStarted)await startApp(); else {await loadAppConfig();await loadRecords();}
+  }catch(e){showAuthError(e.message)}finally{if(btn){btn.disabled=false;btn.textContent='ENTRAR';}}
+}
+async function logoutApp(){
+  try{if(authState.access_token)await api('/api/auth/logout',{method:'POST'});}catch{}
+  clearAuthState();document.body.classList.remove('settings-mode','editor-mode');showLoginView();
+}
+async function enterWithStoredSession(){
+  loadAuthState();if(!authState.access_token&&!authState.refresh_token)return false;
+  if(!authState.access_token&&!(await refreshAuthSession()))return false;
+  try{const r=await api('/api/auth/me');currentUser=r.user||null;return !!currentUser;}catch{if(await refreshAuthSession()){try{const r=await api('/api/auth/me');currentUser=r.user||null;return !!currentUser;}catch{}}clearAuthState();return false;}
+}
 async function init(){
+  let recovery=parseRecoverySession();
+  try{authConfig=await publicApi('/api/auth/config');}catch(e){document.body.classList.remove('auth-booting');showLoginView();showAuthError(`Não foi possível consultar o login. ${e.message}`);return;}
+  if(authConfig.requested && !authConfig.configured){
+    showLoginView();const b=$('authSetupBox');if(b){b.classList.remove('hidden');b.textContent='Login aguardando configuração do Supabase Auth no Render. Informe as chaves SUPABASE_PUBLISHABLE_KEY e SUPABASE_SECRET_KEY.';}return;
+  }
+  if(!authConfig.requested){unlockApp();await startApp();return;}
+  if(authConfig.requested && authConfig.configured && (!authConfig.admin_api || !authConfig.admin_ready)){
+    const b=$('authSetupBox');if(b){b.classList.remove('hidden');b.textContent='Login ativo. Se o administrador inicial ainda não entrar, confira SUPABASE_SECRET_KEY e ID_LAUDO_BOOTSTRAP_ADMIN_PASSWORD no Render.';}
+  }
+  if(recovery){
+    try{const r=await api('/api/auth/me');currentUser=r.user||null;showChangePassword('recovery');}catch(e){clearAuthState();showLoginView();showAuthError('O link de redefinição expirou. Solicite um novo link.');}
+    return;
+  }
+  const ok=await enterWithStoredSession();
+  if(!ok){showLoginView();return;}
+  if(currentUser?.must_change_password){showChangePassword('forced');return;}
+  unlockApp();await startApp();
+}
+
+async function startApp(){
+  if(appStarted){await loadAppConfig();await loadRecords();return;}
   try{
     bootstrap = await api('/api/bootstrap');
     $('statModels').textContent=bootstrap.counts?.models ?? bootstrap.models.length;
@@ -319,6 +463,7 @@ async function init(){
     const src=bootstrap.source || 'Base ID CAMPS';
     if($('sourceInfo')) $('sourceInfo').textContent=src;
     buildStepper(); indexFormStructure(); fillPeople(); fillManufacturers(); fillPortarias(); bindInputModes(); sanitizeNumericFields(); bindProcessToToi(); setDefaults(); updateBottomNav(); await loadAppConfig(); await loadRecords();
+    appStarted=true;
   }catch(e){ modal('ID LAUDO',`Não foi possível carregar a base de cadastros.\n\n${e.message}`); }
   if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
 }
@@ -549,7 +694,7 @@ function collect(){
     responsavel_ensaio:val('responsavel_ensaio'),equipamento_utilizado:val('equipamento_utilizado'),tecnico_1:val('tecnico_1'),assinatura:val('assinatura')||'COM',responsavel_tecnico:val('responsavel_tecnico'),digitador:val('digitador'),
     leitura_kw_inicial:val('leitura_kw_inicial'),leitura_kw_final:val('leitura_kw_final'),ea_cos_cn:val('ea_cos_cn'),ea_cos_cp:val('ea_cos_cp'),ea_cos_ci:val('ea_cos_ci'),ea_nominal:val('ea_nominal'),ea_pequena:val('ea_pequena'),ea_indutiva:val('ea_indutiva'),reativo:val('reativo')||'NÃO',leitura_kvar_inicial:val('leitura_kvar_inicial'),leitura_kvar_final:val('leitura_kvar_final'),er_nominal:val('reativo')==='SIM'?val('er_nominal'):'-',er_pequena:val('reativo')==='SIM'?val('er_pequena'):'-',er_indutiva:val('reativo')==='SIM'?val('er_indutiva'):'-',
     avaliacao_parecer:val('avaliacao_parecer')||'-',observacao_portaria:val('observacao_portaria'),observacao_livre:val('observacao_livre'),presencial:val('presencial'),dados_presencial:val('presencial')?val('dados_presencial'):'',comparecimento:val('comparecimento')||'NAO_COMPARECEU',
-    espelho_extra:{numero_fios:val('numero_fios'),modo_interface:'APP',procedimentos_preliminares:{involucro_medidor:val('pre_involucro'),numero_involucro_lacre:val('pre_numero_involucro'),condicoes_involucro:val('pre_condicao'),toi_comprovante:val('pre_toi'),toi_numeracao:val('pre_toi_numero'),preenchimento_toi:val('pre_preenchimento'),ocorrencia_preenchimento:val('pre_ocorrencia')}}
+    espelho_extra:{numero_fios:val('numero_fios'),modo_interface:'APP',usuario_app:{profile_id:currentUser?.id||null,nome:currentUser?.nome||'',email:currentUser?.email||'',perfil:currentUser?.perfil||''},procedimentos_preliminares:{involucro_medidor:val('pre_involucro'),numero_involucro_lacre:val('pre_numero_involucro'),condicoes_involucro:val('pre_condicao'),toi_comprovante:val('pre_toi'),toi_numeracao:val('pre_toi_numero'),preenchimento_toi:val('pre_preenchimento'),ocorrencia_preenchimento:val('pre_ocorrencia')}}
   };
   for(let i=0;i<4;i++){const o=selectedObs[i];p[`frase_${i+1}_codigo`]=o?String(o.id):'';p[`frase_${i+1}_texto`]=o?String(o.observacao||'').trim():'';}
   return flags(p);
@@ -684,6 +829,16 @@ async function openOutbox(){try{const r=await api('/api/open-outbox',{method:'PO
 window.idLaudoBack = function(){
   const modalEl=$('modal');
   if(modalEl && !modalEl.classList.contains('hidden')){ closeModal(); return 'HANDLED'; }
+  const forgot=$('forgotView');
+  if(forgot && !forgot.classList.contains('hidden')){ closeForgotPassword(); return 'HANDLED'; }
+  const reset=$('resetPasswordView');
+  if(reset && !reset.classList.contains('hidden')){
+    // A troca obrigatória não pode ser ignorada pelo botão Voltar.
+    if(passwordChangeMode==='forced') return 'HANDLED';
+    clearAuthState(); showLoginView(); return 'HANDLED';
+  }
+  const auth=$('authView');
+  if(auth && !auth.classList.contains('hidden')) return 'EXIT';
   const settings=$('settingsView');
   if(settings && !settings.classList.contains('hidden')){ closeSettings(); return 'HANDLED'; }
   const editor=$('editorView');

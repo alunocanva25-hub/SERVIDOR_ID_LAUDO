@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.24"
+APP_VERSION = "1.0.0.25"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -80,6 +80,9 @@ profiles = Table(
     Column("usuario", String(120), nullable=False, unique=True),
     Column("perfil", String(30), nullable=False, default="OPERADOR"),
     Column("ativo", Boolean, nullable=False, default=True),
+    Column("must_change_password", Boolean, nullable=False, default=True),
+    Column("suspended_at", DateTime(timezone=True), nullable=True),
+    Column("last_login_at", DateTime(timezone=True), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
@@ -158,6 +161,9 @@ def _ensure_online_migrations() -> None:
     with engine.begin() as con:
         con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS email varchar(320)"))
         con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_system_admin boolean NOT NULL DEFAULT false"))
+        con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS must_change_password boolean NOT NULL DEFAULT true"))
+        con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS suspended_at timestamptz"))
+        con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS last_login_at timestamptz"))
         con.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_profiles_email_ci ON public.profiles (lower(email)) WHERE email IS NOT NULL AND btrim(email) <> ''"))
 
 
@@ -186,8 +192,8 @@ def _ensure_bootstrap_admin() -> None:
             """), {"email": BOOTSTRAP_ADMIN_EMAIL, "usuario": BOOTSTRAP_ADMIN_USERNAME, "updated_at": now, "id": int(row[0])})
         else:
             con.execute(text("""
-                INSERT INTO public.profiles(email,is_system_admin,nome,usuario,perfil,ativo,created_at,updated_at)
-                VALUES(:email,true,'Administrador principal',:usuario,'ADMIN',true,:created_at,:updated_at)
+                INSERT INTO public.profiles(email,is_system_admin,nome,usuario,perfil,ativo,must_change_password,created_at,updated_at)
+                VALUES(:email,true,'Administrador principal',:usuario,'ADMIN',true,true,:created_at,:updated_at)
             """), {"email": BOOTSTRAP_ADMIN_EMAIL, "usuario": BOOTSTRAP_ADMIN_USERNAME, "created_at": now, "updated_at": now})
 
 
@@ -284,7 +290,7 @@ def _row_to_dict(row) -> dict:
 
 def save_record(data: dict, record_id: int | None = None, status: str = STATUS_RASCUNHO,
                 export_path: str = "", bridge_id: str = "", status_message: str | None = None,
-                remote_laudo_numero: str | None = None) -> dict:
+                remote_laudo_numero: str | None = None, created_by_profile_id: int | None = None) -> dict:
     ensure_db()
     status = normalize_status(status)
     n, ano, tipo, inst, serie, modelo = _summary(data)
@@ -306,6 +312,8 @@ def save_record(data: dict, record_id: int | None = None, status: str = STATUS_R
             }
             if export_path:
                 values["export_path"] = export_path
+            if created_by_profile_id and not cur.get("created_by_profile_id"):
+                values["created_by_profile_id"] = int(created_by_profile_id)
             con.execute(update(espelhos).where(espelhos.c.id == int(record_id)).values(**values))
             rid = int(record_id)
         else:
@@ -315,30 +323,47 @@ def save_record(data: dict, record_id: int | None = None, status: str = STATUS_R
                 export_path=export_path or "", bridge_id=bridge_id or "",
                 status_message=str(status_message or ""), status_updated_at=now,
                 remote_laudo_numero=str(remote_laudo_numero or ""),
+                created_by_profile_id=int(created_by_profile_id) if created_by_profile_id else None,
             ).returning(espelhos.c.id))
             rid = int(result.scalar_one())
         row = con.execute(select(espelhos).where(espelhos.c.id == rid)).first()
     return _row_to_dict(row)
 
 
-def list_records(limit: int = 100) -> list[dict]:
+def list_records(limit: int = 100, profile_id: int | None = None, include_all: bool = True) -> list[dict]:
     ensure_db()
+    stmt = select(espelhos)
+    if not include_all:
+        if not profile_id:
+            return []
+        stmt = stmt.where(espelhos.c.created_by_profile_id == int(profile_id))
+    stmt = stmt.order_by(desc(espelhos.c.updated_at), desc(espelhos.c.id)).limit(max(1, min(500, int(limit))))
     with engine.connect() as con:
-        rows = con.execute(select(espelhos).order_by(desc(espelhos.c.updated_at), desc(espelhos.c.id)).limit(max(1, min(500, int(limit))))).all()
+        rows = con.execute(stmt).all()
     return [_row_to_dict(r) for r in rows]
 
 
-def get_record(record_id: int) -> dict | None:
+def get_record(record_id: int, profile_id: int | None = None, include_all: bool = True) -> dict | None:
     ensure_db()
+    stmt = select(espelhos).where(espelhos.c.id == int(record_id))
+    if not include_all:
+        if not profile_id:
+            return None
+        stmt = stmt.where(espelhos.c.created_by_profile_id == int(profile_id))
     with engine.connect() as con:
-        row = con.execute(select(espelhos).where(espelhos.c.id == int(record_id))).first()
+        row = con.execute(stmt).first()
     return _row_to_dict(row) if row else None
 
 
-def delete_record(record_id: int) -> bool:
+def delete_record(record_id: int, profile_id: int | None = None, include_all: bool = True) -> bool:
     ensure_db()
+    stmt = delete(espelhos).where(espelhos.c.id == int(record_id))
+    if not include_all:
+        if not profile_id:
+            return False
+        stmt = stmt.where(espelhos.c.created_by_profile_id == int(profile_id))
     with engine.begin() as con:
-        result = con.execute(delete(espelhos).where(espelhos.c.id == int(record_id)))
+        result = con.execute(stmt)
     return bool(result.rowcount)
 
 
@@ -393,10 +418,23 @@ def list_app_users() -> list[dict]:
         d = dict(r._mapping)
         d["ativo"] = 1 if d.get("ativo") else 0
         d.pop("is_system_admin", None)
-        for k in ("created_at", "updated_at"):
+        for k in ("created_at", "updated_at", "suspended_at", "last_login_at"):
             if isinstance(d.get(k), datetime): d[k] = d[k].isoformat(timespec="seconds")
         out.append(d)
     return out
+
+
+def get_app_user(user_id: int) -> dict | None:
+    ensure_db()
+    with engine.connect() as con:
+        row = con.execute(select(profiles).where(profiles.c.id == int(user_id))).first()
+    if not row:
+        return None
+    d = dict(row._mapping)
+    d["ativo"] = 1 if d.get("ativo") else 0
+    for k in ("created_at", "updated_at", "suspended_at", "last_login_at"):
+        if isinstance(d.get(k), datetime): d[k] = d[k].isoformat(timespec="seconds")
+    return d
 
 
 def save_app_user(data: dict, user_id: int | None = None) -> dict:
@@ -406,6 +444,8 @@ def save_app_user(data: dict, user_id: int | None = None) -> dict:
     email = str(data.get("email") or "").strip().lower() or None
     perfil = str(data.get("perfil") or "OPERADOR").strip().upper()
     ativo = bool(data.get("ativo", True))
+    auth_user_id = str(data.get("auth_user_id") or "").strip() or None
+    must_change = bool(data.get("must_change_password", True))
     if not nome or not usuario:
         raise ValueError("Nome e usuário são obrigatórios.")
     if usuario.upper() == BOOTSTRAP_ADMIN_USERNAME.upper():
@@ -421,24 +461,80 @@ def save_app_user(data: dict, user_id: int | None = None) -> dict:
             if current:
                 if bool(current._mapping.get("is_system_admin")):
                     raise ValueError("O administrador principal não pode ser alterado por este menu.")
-                con.execute(update(profiles).where(profiles.c.id == int(user_id)).values(
-                    nome=nome, usuario=usuario, email=email, perfil=perfil, ativo=ativo, updated_at=now
-                ))
+                values = dict(nome=nome, usuario=usuario, email=email, perfil=perfil, ativo=ativo, updated_at=now)
+                if auth_user_id:
+                    values["auth_user_id"] = auth_user_id
+                if "must_change_password" in data:
+                    values["must_change_password"] = must_change
+                con.execute(update(profiles).where(profiles.c.id == int(user_id)).values(**values))
                 rid = int(user_id)
             else:
                 rid = int(con.execute(insert(profiles).values(
                     nome=nome, usuario=usuario, email=email, perfil=perfil, ativo=ativo,
+                    auth_user_id=auth_user_id, must_change_password=must_change,
                     is_system_admin=False, created_at=now, updated_at=now
                 ).returning(profiles.c.id)).scalar_one())
             row = con.execute(select(profiles).where(profiles.c.id == rid)).first()
         d = dict(row._mapping)
         d["ativo"] = 1 if d.get("ativo") else 0
         d.pop("is_system_admin", None)
-        for k in ("created_at", "updated_at"):
+        for k in ("created_at", "updated_at", "suspended_at", "last_login_at"):
             if isinstance(d.get(k), datetime): d[k] = d[k].isoformat(timespec="seconds")
         return d
     except IntegrityError as exc:
         raise ValueError("Já existe um usuário com esse login ou e-mail.") from exc
+
+
+def bind_auth_profile(auth_user_id: str, email: str, nome: str = "") -> dict | None:
+    ensure_db()
+    auth_user_id = str(auth_user_id or "").strip()
+    email = str(email or "").strip().lower()
+    if not auth_user_id or not email:
+        return None
+    now = now_dt()
+    with engine.begin() as con:
+        row = con.execute(select(profiles).where(
+            (profiles.c.auth_user_id == auth_user_id) | (profiles.c.email.ilike(email))
+        ).order_by(profiles.c.is_system_admin.desc(), profiles.c.id)).first()
+        if not row and email == BOOTSTRAP_ADMIN_EMAIL:
+            _ensure_bootstrap_admin()
+            row = con.execute(select(profiles).where(profiles.c.is_system_admin.is_(True)).limit(1)).first()
+        if not row:
+            return None
+        rid = int(row._mapping["id"])
+        values = {"auth_user_id": auth_user_id, "email": email, "last_login_at": now, "updated_at": now}
+        if nome and not str(row._mapping.get("nome") or "").strip():
+            values["nome"] = nome
+        con.execute(update(profiles).where(profiles.c.id == rid).values(**values))
+        row = con.execute(select(profiles).where(profiles.c.id == rid)).first()
+    d = dict(row._mapping)
+    d["ativo"] = 1 if d.get("ativo") else 0
+    for k in ("created_at", "updated_at", "suspended_at", "last_login_at"):
+        if isinstance(d.get(k), datetime): d[k] = d[k].isoformat(timespec="seconds")
+    return d
+
+
+def mark_password_changed(profile_id: int) -> None:
+    ensure_db()
+    with engine.begin() as con:
+        con.execute(update(profiles).where(profiles.c.id == int(profile_id)).values(
+            must_change_password=False, updated_at=now_dt()
+        ))
+
+
+def set_app_user_active(user_id: int, active: bool) -> dict | None:
+    ensure_db()
+    now = now_dt()
+    with engine.begin() as con:
+        row = con.execute(select(profiles).where(profiles.c.id == int(user_id))).first()
+        if not row:
+            return None
+        if bool(row._mapping.get("is_system_admin")):
+            raise ValueError("O administrador principal não pode ser suspenso.")
+        con.execute(update(profiles).where(profiles.c.id == int(user_id)).values(
+            ativo=bool(active), suspended_at=None if active else now, updated_at=now
+        ))
+    return get_app_user(user_id)
 
 
 def delete_app_user(user_id: int) -> bool:
@@ -454,12 +550,12 @@ def delete_app_user(user_id: int) -> bool:
 def bootstrap_admin_info() -> dict:
     ensure_db()
     with engine.connect() as con:
-        row = con.execute(select(profiles.c.id, profiles.c.email, profiles.c.usuario, profiles.c.perfil, profiles.c.ativo)
+        row = con.execute(select(profiles.c.id, profiles.c.email, profiles.c.usuario, profiles.c.perfil, profiles.c.ativo, profiles.c.auth_user_id, profiles.c.must_change_password)
                           .where(profiles.c.is_system_admin.is_(True)).limit(1)).first()
     if not row:
         return {"configured": False}
     d = dict(row._mapping)
-    return {"configured": True, "perfil": d.get("perfil"), "ativo": bool(d.get("ativo")), "login_mode": "EMAIL_SUPABASE_AUTH"}
+    return {"configured": True, "perfil": d.get("perfil"), "ativo": bool(d.get("ativo")), "auth_linked": bool(d.get("auth_user_id")), "must_change_password": bool(d.get("must_change_password")), "login_mode": "EMAIL_SUPABASE_AUTH"}
 
 
 def catalog_counts() -> dict:
@@ -498,7 +594,7 @@ def safe_component(value: object, fallback: str = "SEM-DADO") -> str:
     return text or fallback
 
 
-def export_bridge(data: dict, record_id: int | None = None) -> dict:
+def export_bridge(data: dict, record_id: int | None = None, created_by_profile_id: int | None = None) -> dict:
     payload = dict(data or {})
     existing = get_record(int(record_id)) if record_id else None
     bridge_id = str((existing or {}).get("bridge_id") or "") or new_bridge_id()
@@ -511,7 +607,7 @@ def export_bridge(data: dict, record_id: int | None = None) -> dict:
         "transport": "POSTGRESQL",
     })
     payload["_bridge"] = bridge
-    saved = save_record(payload, record_id=record_id, status=STATUS_AGUARDANDO, bridge_id=bridge_id)
+    saved = save_record(payload, record_id=record_id, status=STATUS_AGUARDANDO, bridge_id=bridge_id, created_by_profile_id=created_by_profile_id)
     tipo = safe_component(payload.get("tipo") or "NR")
     nr = safe_component(payload.get("numero_laudo") or "____")
     ano = safe_component(payload.get("ano") or datetime.now().year)
@@ -534,4 +630,4 @@ def backend_info() -> dict:
     url = str(os.environ.get("DATABASE_URL") or "")
     host = "PostgreSQL"
     if "supabase" in url.lower(): host = "Supabase PostgreSQL"
-    return {"mode": "ONLINE", "database": host, "persistent": True, "auth": "PREPARADO", "notifications": True}
+    return {"mode": "ONLINE", "database": host, "persistent": True, "auth": "ATIVO" if str(os.environ.get("ID_LAUDO_AUTH_ENABLED") or "").strip().lower() in {"1","true","yes","sim","on"} else "PREPARADO", "notifications": True}
