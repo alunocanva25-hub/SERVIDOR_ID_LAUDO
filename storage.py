@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.23"
+APP_VERSION = "1.0.0.24"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -274,6 +274,11 @@ def update_record_status(record_id: int, status: str, message: str = "", remote_
     return row_to_dict(full) if full else None
 
 
+def list_notifications(limit: int = 100) -> list[dict]:
+    # No modo local não há Central de Notificações remota.
+    return []
+
+
 def list_app_users() -> list[dict]:
     ensure_db()
     with sqlite3.connect(db_path()) as con:
@@ -411,6 +416,6 @@ def export_bridge(data: dict, record_id: int | None = None) -> dict:
         status=STATUS_PRONTO,
         export_path=str(target),
         bridge_id=bridge_id,
-        status_message="Aguardando importação pelo ID CAMPS Laudos.",
+        status_message="Modo local: arquivo preparado somente neste computador. Use o servidor ONLINE para enviar ao PostgreSQL.",
     )
     return {"record": saved, "path": str(target), "filename": target.name, "bridge_id": bridge_id}

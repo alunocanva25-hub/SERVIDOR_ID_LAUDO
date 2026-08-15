@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0a3b62">
-  <title>ID LAUDO V1.0.0.23</title>
+  <title>ID LAUDO V1.0.0.24</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/assets/ID_LAUDO.png">
   <link rel="stylesheet" href="/static/style.css">
@@ -87,9 +87,18 @@
     </div>
 
     <div class="settingsCard collapsible" data-settings-card="server">
-      <button class="settingsCardHead" type="button" onclick="toggleSettingsCard(this)"><div><span class="settingsIcon">⌁</span><div><b>Servidor / IP</b><small>Conexão com o computador</small></div></div><span class="collapseChevron">⌄</span></button>
+      <button class="settingsCardHead" type="button" onclick="toggleSettingsCard(this)"><div><span class="settingsIcon">⌁</span><div><b>Servidor</b><small>Render online • IP local somente como contingência</small></div></div><span class="collapseChevron">⌄</span></button>
       <div class="settingsCardBody">
-        <div class="settingsRow"><div><span>Servidor atual</span><b id="settingsServerValue">—</b></div><button class="secondary" type="button" onclick="openIpSettings()">ALTERAR IP</button></div>
+        <div class="serverSummary">
+          <div><span>Modo atual</span><b id="settingsServerMode">ONLINE</b></div>
+          <div><span>Servidor atual</span><b id="settingsServerValue">—</b></div>
+        </div>
+        <div class="settingsServerActions">
+          <button class="primary" type="button" onclick="useOnlineServer()">USAR ONLINE</button>
+          <button class="secondary" type="button" onclick="openCloudSettings()">ALTERAR SERVIDOR</button>
+          <button class="secondary" type="button" onclick="openIpSettings()">MODO LOCAL / IP</button>
+        </div>
+        <div class="configHint">No uso normal, o APK conecta diretamente ao Render e ao Supabase/PostgreSQL. O IP do computador fica apenas como alternativa local.</div>
       </div>
     </div>
 

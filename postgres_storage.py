@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.23"
+APP_VERSION = "1.0.0.24"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -363,6 +363,22 @@ def update_record_status(record_id: int, status: str, message: str = "", remote_
         ))
         row = con.execute(select(espelhos).where(espelhos.c.id == int(record_id))).first()
     return _row_to_dict(row)
+
+
+def list_notifications(limit: int = 100) -> list[dict]:
+    ensure_db()
+    with engine.connect() as con:
+        rows = con.execute(
+            select(notifications).order_by(desc(notifications.c.created_at), desc(notifications.c.id)).limit(max(1, min(500, int(limit))))
+        ).all()
+    out = []
+    for r in rows:
+        d = dict(r._mapping)
+        for k in ("created_at", "read_at"):
+            if isinstance(d.get(k), datetime):
+                d[k] = d[k].isoformat(timespec="seconds")
+        out.append(d)
+    return out
 
 
 def list_app_users() -> list[dict]:

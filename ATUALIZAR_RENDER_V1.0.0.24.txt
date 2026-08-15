@@ -1,0 +1,22 @@
+ID LAUDO V1.0.0.24 - ATUALIZACAO DO RENDER
+
+Este repositorio GitHub usa os arquivos de SERVIDOR_ID_LAUDO diretamente na raiz.
+Envie/substitua o conteudo desta pasta no repositorio SERVIDOR_ID_LAUDO e faca novo deploy no Render.
+
+Root Directory no Render: DEIXAR VAZIO.
+Build Command: pip install -r requirements.txt
+Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
+Health Check: /api/health
+
+Environment:
+DATABASE_URL = sua conexao Supabase atual
+ID_LAUDO_CATALOG_BACKEND = postgres
+ID_LAUDO_AUTH_ENABLED = false
+ID_LAUDO_BOOTSTRAP_ADMIN_EMAIL = dayvisant4@gmail.com
+
+NOVO TESTE DE INTEGRACAO
+GET /api/records        -> registros do PostgreSQL
+GET /api/notifications  -> notificacoes geradas ao FINALIZAR
+GET /api/health         -> confirma backend ONLINE
+
+A V1.0.0.24 corrige o APK para usar o Render por padrao. O IP local fica apenas como contingencia.

@@ -17,7 +17,7 @@ from storage_backend import (
     STATUS_PRONTO, STATUS_RASCUNHO, STATUS_REVISAO, app_data_dir, delete_record,
     export_bridge, get_record, list_records, save_record, update_record_status,
     list_app_users, save_app_user, delete_app_user, get_app_setting, set_app_setting,
-    backend_info, bootstrap_admin_info,
+    list_notifications, backend_info, bootstrap_admin_info,
 )
 
 RESOURCE_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
@@ -191,6 +191,11 @@ def observations():
 def records():
     return {"ok": True, "items": list_records()}
 
+@app.get("/api/notifications")
+def api_notifications():
+    return {"ok": True, "items": list_notifications()}
+
+
 @app.get("/api/config")
 def config_get():
     return {
@@ -262,7 +267,7 @@ def save(payload: dict = Body(...)):
         if current and current.get("status") == STATUS_DEVOLVIDO:
             # Mantém o aviso de correção até o técnico finalizar e reenviar.
             status = STATUS_DEVOLVIDO
-    return {"ok": True, "item": save_record(data, record_id=record_id, status=status)}
+    return {"ok": True, "item": save_record(data, record_id=record_id, status=status), "backend": backend_info()}
 
 
 @app.delete("/api/records/{record_id}")
@@ -279,7 +284,7 @@ def export(payload: dict = Body(...)):
     missing = [name for name in required if not clean(data.get(name))]
     if missing:
         raise HTTPException(400, "Campos obrigatórios: Nº do Laudo, Instalação, Nº do Medidor/Série e Modelo.")
-    return {"ok": True, **export_bridge(data, record_id=payload.get("id"))}
+    return {"ok": True, **export_bridge(data, record_id=payload.get("id")), "backend": backend_info()}
 
 
 @app.post("/api/open-outbox")

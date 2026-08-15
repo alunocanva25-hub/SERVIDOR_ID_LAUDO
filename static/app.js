@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.0.0.23';
+const VERSION = 'V1.0.0.24';
 const LIMITS = {
   'A (2%)': {ativa:4.00, reativa:4.00},
   'B (1%)': {ativa:1.30, reativa:2.60},
@@ -105,26 +105,35 @@ function onHistorySearch(v){
 }
 function clearHistorySearch(){ historySearchTerm=''; setVal('historySearch',''); $('historySearchClear')?.classList.add('hidden'); renderHistory(); }
 
-function openSettings(server=''){
+function openSettings(server='',serverMode=''){
   if($('settingsView') && !$('settingsView').classList.contains('hidden')) return;
   settingsPreviousTab=activeMainTab;
   settingsReturnEditor=!!($('editorView') && !$('editorView').classList.contains('hidden'));
-  if($('settingsServerValue')) $('settingsServerValue').textContent=server||'—';
+  if($('settingsServerValue')) $('settingsServerValue').textContent=server||location.host||'—';
+  if($('settingsServerMode')) $('settingsServerMode').textContent=(serverMode||((location.protocol==='https:')?'ONLINE':'LOCAL')).toUpperCase();
   document.body.classList.add('settings-mode');
   if(settingsReturnEditor){document.body.classList.remove('editor-mode');switchView('settingsView','editorView','right');}
   else switchView('settingsView',`${activeMainTab}View`,'right');
   refreshSettingsData();
 }
-window.openSettingsFromNative=function(server=''){ openSettings(String(server||'')); return 'OK'; };
+window.openSettingsFromNative=function(server='',serverMode=''){ openSettings(String(server||''),String(serverMode||'')); return 'OK'; };
 function closeSettings(){
   document.body.classList.remove('settings-mode');
   if(settingsReturnEditor){document.body.classList.add('editor-mode');switchView('editorView','settingsView','left');settingsReturnEditor=false;return;}
   switchView(`${settingsPreviousTab}View`,'settingsView','left');
   activeMainTab=settingsPreviousTab; updateBottomNav();
 }
+function useOnlineServer(){
+  if(navigator.userAgent.includes('IDLAUDOAndroid')) window.location.href='idlaudo://use-cloud';
+  else modal('Servidor online','Esta opção é controlada pelo APK Android. No navegador, você já está conectado ao endereço atual.');
+}
+function openCloudSettings(){
+  if(navigator.userAgent.includes('IDLAUDOAndroid')) window.location.href='idlaudo://cloud';
+  else modal('Servidor online','A alteração do endereço do Render é feita pelo APK Android.');
+}
 function openIpSettings(){
   if(navigator.userAgent.includes('IDLAUDOAndroid')) window.location.href='idlaudo://ip';
-  else modal('Servidor / IP','A alteração do IP é feita pelo APK Android.');
+  else modal('Modo local / IP','O IP local é uma contingência e é configurado pelo APK Android.');
 }
 function toggleSettingsCard(button){
   const card=button?.closest('.settingsCard'); if(!card) return;
@@ -252,8 +261,8 @@ ${src}
 COMO USAR
 • Campos numéricos abrem teclado numérico.
 • Invólucro e TOI aceitam letras e números.
-• SALVAR guarda o rascunho e volta para Laudos.
-• FINALIZAR prepara o envio para o ID CAMPS.`);
+• SALVAR grava o rascunho no banco online e volta para Laudos.
+• FINALIZAR envia para o PostgreSQL e cria a notificação para revisão no ID CAMPS.`);
 }
 
 function syncToiFromProcess(force=false){
@@ -582,7 +591,9 @@ async function saveDraft(silent=false){
     $('editorTitle').textContent=`${r.item.tipo || 'NR'}-${r.item.numero_laudo || 'SEM Nº'} • ${r.item.instalacao || 'SEM INSTALAÇÃO'}`;
     setSaveState('SALVO','saved');
     if(!silent){
-      modal('Rascunho salvo','O laudo foi salvo com sucesso.',[['OK','primary',()=>{closeModal();exitEditorToLaudos();}]]);
+      const online=(r.backend?.mode||appConfig.backend?.mode)==='ONLINE';
+      const msg=online?'O laudo foi salvo no Supabase/PostgreSQL com sucesso.':'O laudo foi salvo somente no modo local. Para enviar ao PostgreSQL, altere o Servidor para ONLINE em Configurações.';
+      modal('Rascunho salvo',msg,[['OK','primary',()=>{closeModal();exitEditorToLaudos();}]]);
     }
   }catch(e){ setSaveState('SEM REDE','error'); if(!silent) modal('Salvar rascunho',e.message); }
   finally{ autoSaving=false; }
@@ -590,7 +601,7 @@ async function saveDraft(silent=false){
 async function exportBridge(){
   const p=collect();const missing=[];if(!p.numero_laudo)missing.push('Nº do Laudo');if(!p.instalacao)missing.push('Instalação');if(!p.numero_serie)missing.push('Nº do medidor / Série');if(!p.modelo)missing.push('Modelo');if(missing.length){modal('Espelho incompleto',`Preencha antes de finalizar:\n• ${missing.join('\n• ')}`);return;}
   if(p.lacragem_sim && !lacIds().some(id=>checked(id))){modal('Lacragem','Selecione pelo menos uma opção da integridade dos lacres ou marque a inspeção como NÃO.');return;}
-  try{const r=await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:currentRecordId,data:p})});currentRecordId=r.record.id;$('editorStatus').textContent='PRONTO PARA ID CAMPS';setSaveState('FINALIZADO','saved');modal('Laudo finalizado',`Envio preparado com sucesso.\n\n${r.filename}\n\nID: ${r.bridge_id||'—'}`,[['OK','primary',()=>{closeModal();exitEditorToLaudos();}]])}
+  try{const r=await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:currentRecordId,data:p})});currentRecordId=r.record.id;const online=r.backend?.mode==='ONLINE';$('editorStatus').textContent=statusMeta(r.record.status).label.toUpperCase();setSaveState(online?'ENVIADO':'LOCAL','saved');const msg=online?`Laudo gravado no Supabase/PostgreSQL e enviado para revisão.\n\nStatus: ${statusMeta(r.record.status).label}\nID: ${r.bridge_id||'—'}`:`O app está em MODO LOCAL. O laudo foi salvo somente neste computador e NÃO foi enviado ao PostgreSQL.\n\nAbra ⚙ Configurações → Servidor → USAR ONLINE.`;modal(online?'Laudo enviado':'Laudo salvo localmente',msg,[['OK','primary',()=>{closeModal();exitEditorToLaudos();}]])}
   catch(e){modal('Finalizar Espelho',e.message)}
 }
 
