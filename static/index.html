@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0a3b62">
+  <title>ID LAUDO V1.0.0.22</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/assets/ID_LAUDO.png">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-ui-mode="app">
+<header class="topbar">
+  <div class="brand">
+    <img src="/static/assets/ID_LAUDO.png" alt="ID LAUDO">
+    <div><h1>ID LAUDO</h1><span>App de campo • Espelho digital</span></div>
+  </div>
+  <div class="topActions">
+    <button class="topTool" type="button" onclick="showQuickHelp()" aria-label="Ajuda">?</button>
+    <button class="topTool" type="button" onclick="newLaudo()" aria-label="Novo">+</button>
+    <button id="installBtn" class="ghost hidden" onclick="installPwa()">INSTALAR</button>
+  </div>
+</header>
+
+<main>
+  <section id="homeView" class="view mainTab">
+    <span id="sourceInfo" class="hidden">Carregando base...</span>
+
+    <div class="homeCompactHead">
+      <div><span class="eyebrow">INÍCIO</span><h2>Visão geral</h2></div>
+      <button class="primary compactCreate" type="button" onclick="newLaudo()">CRIAR LAUDO</button>
+    </div>
+
+    <div class="statusStrip homeStatusStrip">
+      <div class="statusCard"><span>Rascunhos</span><b id="statDrafts">–</b></div>
+      <div class="statusCard"><span>Em fluxo</span><b id="statReady">–</b></div>
+      <div class="statusCard"><span>Total</span><b id="statTotal">–</b></div>
+    </div>
+
+    <div class="summaryGrid summaryGrid2">
+      <div class="summaryCard"><span>MODELOS</span><b id="statModels">–</b></div>
+      <div class="summaryCard"><span>OBSERVAÇÕES</span><b id="statObs">–</b></div>
+    </div>
+
+    <div class="quickGrid">
+      <button class="quickCard" type="button" onclick="newLaudo()"><div class="quickIcon">+</div><div><b>Novo laudo</b><span>Criar um novo espelho</span></div></button>
+      <button class="quickCard" type="button" onclick="switchMainTab('laudos')"><div class="quickIcon">≡</div><div><b>Laudos</b><span>Continuar rascunhos</span></div></button>
+      <button class="quickCard" type="button" onclick="switchMainTab('historico')"><div class="quickIcon">◷</div><div><b>Histórico</b><span>Consultar registros</span></div></button>
+    </div>
+  </section>
+
+  <section id="laudosView" class="view mainTab hidden">
+    <div class="sectionHeader appPanel compact">
+      <div><span class="eyebrow">LAUDOS</span><h3>Rascunhos e andamento</h3></div>
+      <button class="primary" type="button" onclick="newLaudo()">CRIAR</button>
+    </div>
+    <div class="statusStrip statusStrip3">
+      <div class="statusCard"><span>Rascunhos</span><b id="draftCountLabel">0</b></div>
+      <div class="statusCard"><span>Em fluxo</span><b id="readyCountLabel">0</b></div>
+      <div class="statusCard correction"><span>Correções</span><b id="correctionCountLabel">0</b></div>
+    </div>
+    <div class="searchBar appPanel"><span class="searchIcon">⌕</span><input id="laudosSearch" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="Pesquisar nº do laudo ou medidor" oninput="onLaudosSearch(this.value)"><button type="button" class="clearSearch hidden" id="laudosSearchClear" onclick="clearLaudosSearch()">×</button></div>
+    <div id="draftsEmpty" class="empty">Nenhum laudo em andamento.</div>
+    <div id="draftsGrid" class="recordsGrid"></div>
+  </section>
+
+  <section id="historicoView" class="view mainTab hidden">
+    <div class="sectionHeader appPanel compact">
+      <div><span class="eyebrow">HISTÓRICO</span><h3>Todos os laudos</h3></div>
+      <div class="filterChips">
+        <button id="historyAllBtn" class="chip active" type="button" onclick="setHistoryFilter('ALL')">Todos</button>
+        <button id="historyDraftBtn" class="chip" type="button" onclick="setHistoryFilter('RASCUNHO')">Rascunhos</button>
+        <button id="historySentBtn" class="chip" type="button" onclick="setHistoryFilter('ENVIADOS')">Enviados</button>
+        <button id="historyReturnedBtn" class="chip" type="button" onclick="setHistoryFilter('DEVOLVIDO')">Correção</button>
+        <button id="historyCreatedBtn" class="chip" type="button" onclick="setHistoryFilter('LAUDO_CRIADO')">Criados</button>
+      </div>
+    </div>
+    <div class="searchBar appPanel"><span class="searchIcon">⌕</span><input id="historySearch" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="Pesquisar nº do laudo ou medidor" oninput="onHistorySearch(this.value)"><button type="button" class="clearSearch hidden" id="historySearchClear" onclick="clearHistorySearch()">×</button></div>
+    <div id="recordsEmpty" class="empty">Nenhum laudo encontrado.</div>
+    <div id="recordsGrid" class="recordsGrid"></div>
+  </section>
+
+  <section id="settingsView" class="view hidden">
+    <div class="settingsHeader">
+      <button class="back" type="button" onclick="closeSettings()"><span>←</span><strong>Voltar</strong></button>
+      <div><span class="eyebrow">CONFIGURAÇÕES</span><h2>Ajustes do aplicativo</h2></div>
+    </div>
+
+    <div class="settingsCard collapsible" data-settings-card="server">
+      <button class="settingsCardHead" type="button" onclick="toggleSettingsCard(this)"><div><span class="settingsIcon">⌁</span><div><b>Servidor / IP</b><small>Conexão com o computador</small></div></div><span class="collapseChevron">⌄</span></button>
+      <div class="settingsCardBody">
+        <div class="settingsRow"><div><span>Servidor atual</span><b id="settingsServerValue">—</b></div><button class="secondary" type="button" onclick="openIpSettings()">ALTERAR IP</button></div>
+      </div>
+    </div>
+
+    <div class="settingsCard collapsible" data-settings-card="cloud">
+      <button class="settingsCardHead" type="button" onclick="toggleSettingsCard(this)"><div><span class="settingsIcon">☁</span><div><b>Nuvem / Banco</b><small>Base online preparada</small></div></div><span class="collapseChevron">⌄</span></button>
+      <div class="settingsCardBody">
+        <div class="cloudStatusGrid">
+          <div><span>Modo</span><b id="cfgBackendMode">LOCAL</b></div>
+          <div><span>Banco</span><b id="cfgBackendDb">SQLite</b></div>
+          <div><span>Catálogo</span><b id="cfgCatalogMode">SQLite</b></div>
+          <div><span>Login</span><b id="cfgAuthMode">ADIADO</b></div>
+        </div>
+        <div class="configHint">A arquitetura Render + Supabase/PostgreSQL já está preparada. O login será ativado somente quando o app estiver aprovado.</div>
+      </div>
+    </div>
+
+    <div class="settingsCard collapsible" data-settings-card="users">
+      <button class="settingsCardHead" type="button" onclick="toggleSettingsCard(this)"><div><span class="settingsIcon">♙</span><div><b>Usuários</b><small>Perfis ADMIN e OPERADOR</small></div></div><span class="collapseChevron">⌄</span></button>
+      <div class="settingsCardBody">
+        <div class="settingsGrid userCreateGrid">
+          <div class="field"><label>Nome</label><input id="cfgUserName" autocomplete="off"></div>
+          <div class="field"><label>Usuário</label><input id="cfgUserLogin" autocomplete="off"></div>
+          <div class="field"><label>Perfil</label><select id="cfgUserRole"><option value="OPERADOR">OPERADOR</option><option value="ADMIN">ADMIN</option></select></div>
+          <button class="primary cfgAddUser" type="button" onclick="saveConfigUser()">ADICIONAR</button>
+        </div>
+        <div id="configUsersList" class="configUsersList"></div>
+      </div>
+    </div>
+
+    <div class="settingsCard collapsible" data-settings-card="form">
+      <button class="settingsCardHead" type="button" onclick="toggleSettingsCard(this)"><div><span class="settingsIcon">▤</span><div><b>Novo Laudo</b><small>Campos e cards exibidos no preenchimento</small></div></div><span class="collapseChevron">⌄</span></button>
+      <div class="settingsCardBody">
+        <div class="settingsToolbar"><span>Escolha o que aparece em Criar Laudo.</span><button class="secondary miniAction" type="button" onclick="resetFormVisibility()">REEXIBIR TUDO</button></div>
+        <div id="formConfigList" class="formConfigList"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="editorView" class="view hidden">
+    <div class="editorHeader">
+      <button class="back" onclick="backHome()"><span>←</span><strong>Voltar</strong></button>
+      <div><div class="editorMeta"><span class="eyebrow" id="editorStatus">NOVO ESPELHO</span><span id="saveState" class="saveState">RASCUNHO</span></div><h2 id="editorTitle">Novo Laudo</h2></div>
+      <div class="editorHeaderActions"><button class="editorTool helpTool" type="button" onclick="showQuickHelp()" aria-label="Ajuda">?</button><button class="editorTool saveTool" type="button" onclick="saveDraft()">SALVAR</button><button class="editorTool finishTool" type="button" onclick="exportBridge()">FINALIZAR</button></div>
+    </div>
+
+    <div class="stepper" id="stepper"></div>
+
+    <form id="laudoForm" autocomplete="off" onsubmit="return false">
+      <section class="step active" data-step="0" data-title="Identificação">
+        <div class="card"><div class="cardHead"><div><span>01</span><h3>Identificação</h3></div><p>Dados principais.</p></div>
+          <div class="grid">
+            <div class="field span2"><label>Tipo</label><div class="segmented"><button type="button" id="tipoNR" class="active" onclick="setTipo('NR')">NR</button><button type="button" id="tipoCV" onclick="setTipo('CV')">CV</button></div><input id="tipo" type="hidden" value="NR"><small id="tipoDesc">NOTIFICAÇÃO DE REPROVAÇÃO</small></div>
+            <div class="field"><label>Nº do Laudo *</label><input id="numero_laudo" inputmode="numeric" placeholder="Ex.: 2504"></div>
+            <div class="field"><label>Ano</label><input id="ano" type="number" min="2020" max="2100"></div>
+            <div class="field"><label>Processo</label><input id="processo"></div>
+            <div class="field"><label>Nº do invólucro / Protocolo</label><input id="numero_protocolo"></div>
+            <div class="field"><label>Instalação / UC *</label><input id="instalacao" inputmode="numeric"></div>
+            <div class="field"><label>Nº do medidor / Série *</label><input id="numero_serie"></div>
+            <div class="field"><label>Data do ensaio</label><input id="data_ensaio" type="date"></div>
+            <div class="field"><label>Data de emissão</label><input id="data_emissao" type="date"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="step" data-step="1" data-title="Medidor">
+        <div class="card"><div class="cardHead"><div><span>02</span><h3>Dados do medidor</h3></div><p>Busca automática do cadastro.</p></div>
+          <div class="grid">
+            <div class="field span2"><label>Pesquisar modelo *</label><input id="modeloSearch" placeholder="Digite parte do modelo ou fabricante" oninput="filterModels(this.value)"><div id="modelResults" class="modelResults"></div></div>
+            <div class="field"><label>Modelo *</label><input id="modelo" placeholder="Modelo selecionado ou digitado"></div>
+            <div class="field"><label>Fabricante</label><input id="fabricante" autocomplete="off" placeholder="Digite parte do fabricante" onfocus="filterManufacturers(this.value)" oninput="filterManufacturers(this.value)"><div id="manufacturerResults" class="modelResults"></div></div>
+            <div class="field"><label>Portaria de aprovação</label><input id="portaria"></div>
+            <div class="field"><label>Classe</label><input id="classe"></div>
+            <div class="field"><label>Nº de elementos</label><input id="elementos" inputmode="numeric"></div>
+            <div class="field"><label>Nº de fios <em>Espelho</em></label><input id="numero_fios" inputmode="numeric"></div>
+            <div class="field"><label>Corrente nominal</label><input id="corrente_nominal"></div>
+            <div class="field"><label>Corrente máxima</label><input id="corrente_maxima"></div>
+            <div class="field"><label>Tensão nominal</label><input id="tensao_nominal"></div>
+            <div class="field"><label>Frequência</label><input id="frequencia"></div>
+            <div class="field"><label>Constante</label><input id="constante"></div>
+            <div class="field"><label>Portaria RTM</label><input id="portaria_rtm"></div>
+            <div class="field"><label>Ano de fabricação</label><input id="ano_fabricacao" inputmode="numeric"></div>
+          </div>
+        </div>
+        <div class="card"><div class="cardHead"><div><span>02B</span><h3>Responsáveis e equipamento</h3></div><p>Cadastros da base.</p></div>
+          <div class="grid">
+            <div class="field"><label>Responsável pelo ensaio</label><select id="responsavel_ensaio"></select></div>
+            <div class="field"><label>Equipamento utilizado</label><select id="equipamento_utilizado"></select></div>
+            <div class="field"><label>Técnico assinatura</label><select id="tecnico_1"></select></div>
+            <div class="field"><label>Assinatura</label><select id="assinatura"><option value="COM">COM ASSINATURA</option><option value="SEM">SEM ASSINATURA</option></select></div>
+            <div class="field"><label>Responsável técnico</label><select id="responsavel_tecnico"></select></div>
+            <div class="field"><label>Digitador</label><select id="digitador"></select></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="step" data-step="2" data-title="Preliminares">
+        <div class="card"><div class="cardHead"><div><span>03</span><h3>Procedimentos preliminares</h3></div><p>Dados extras do espelho.</p></div>
+          <div class="grid">
+            <div class="field"><label>Invólucro do medidor</label><select id="pre_involucro"><option value="SIM">SIM</option><option value="NÃO">NÃO</option></select></div>
+            <div class="field"><label>Nº do invólucro/lacre</label><input id="pre_numero_involucro"></div>
+            <div class="field span2"><label>Condições do invólucro</label><select id="pre_condicao"><option value="CONFORME">CONFORME</option><option value="INVÓLUCRO PERFURADO">INVÓLUCRO PERFURADO</option><option value="INVÓLUCRO COM LACRE VIOLADO">INVÓLUCRO COM LACRE VIOLADO</option><option value="OUTROS">OUTRO(S) / VER OBSERVAÇÕES</option></select></div>
+            <div class="field"><label>TOI / Comprovante</label><select id="pre_toi"><option value="COMPROVANTE">COMPROVANTE</option><option value="NÃO">NÃO</option></select></div>
+            <div class="field"><label>Numeração do TOI</label><input id="pre_toi_numero"></div>
+            <div class="field"><label>Preenchimento TOI/Comprovante</label><select id="pre_preenchimento"><option value="SIM">SIM</option><option value="NÃO">NÃO</option></select></div>
+            <div class="field"><label>Ocorrência no preenchimento</label><select id="pre_ocorrencia"><option value="CONFORME">CONFORME</option><option value="PREENCHIMENTO INCOMPLETO">PREENCHIMENTO INCOMPLETO DOS DADOS</option><option value="AUSÊNCIA DE ASSINATURA">AUSÊNCIA DE ASSINATURA(S)</option><option value="OUTROS">OUTRO(S) / VER OBSERVAÇÕES</option></select></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="step" data-step="3" data-title="Inspeções">
+        <div class="card"><div class="cardHead"><div><span>04</span><h3>Integridade dos lacres</h3></div><p>Resultado automático da lacragem.</p></div>
+          <div class="grid">
+            <div class="field"><label>Inspeção realizada</label><select id="lacragem_realizado" onchange="syncLacragem()"><option value="SIM">SIM</option><option value="NÃO">NÃO (ver observações)</option></select></div>
+            <div class="field"><label>Lacres retirados</label><select id="lacres_retirados"><option value="NÃO">NÃO</option><option value="SIM">SIM</option></select></div>
+            <div class="resultBox"><span>Sistema de lacragem</span><b id="lacragemResult">REGULAR</b></div>
+          </div>
+          <div class="checks" id="lacChecks">
+            <label><input id="lacragem_conforme" type="checkbox" checked onchange="syncLacragem(this)"> Conforme</label>
+            <label><input id="lacragem_ausencia" type="checkbox" onchange="syncLacragem(this)"> Ausência de lacre(s)</label>
+            <label><input id="lacragem_travas" type="checkbox" onchange="syncLacragem(this)"> Travas internas danificadas</label>
+            <label><input id="lacragem_arame" type="checkbox" onchange="syncLacragem(this)"> Arame/fio rompido</label>
+            <label><input id="lacragem_haste" type="checkbox" onchange="syncLacragem(this)"> Arame/fio/haste instalado incorretamente</label>
+            <label><input id="lacragem_pontos" type="checkbox" onchange="syncLacragem(this)"> Ponto(s) de ligação rompido(s)</label>
+            <label><input id="lacragem_outros" type="checkbox" onchange="syncLacragem(this)"> Outro(s) / ver observações</label>
+            <label><input id="lacragem_pea" type="checkbox" onchange="syncLacragem(this)"> Lacre de empresa autorizada (PEA)</label>
+          </div>
+        </div>
+        <div class="card"><div class="cardHead"><div><span>05</span><h3>Inspeção visual do modelo aprovado</h3></div></div>
+          <div class="grid">
+            <div class="field"><label>Realizada</label><select id="inspecao_visual_realizada"><option value="SIM">SIM</option><option value="NÃO">NÃO (ver observações)</option></select></div>
+            <div class="field"><label>Dados de placa</label><select id="dados_placa"><option value="CONFORME">CONFORME</option><option value="NÃO CONFORME">NÃO CONFORME</option></select></div>
+            <div class="field"><label>Dimensões do medidor</label><select id="dimensoes"><option value="CONFORME">CONFORME</option><option value="NÃO CONFORME">NÃO CONFORME</option><option value="N/A">NÃO APLICÁVEL</option></select></div>
+            <div class="field"><label>Plano de selagem</label><select id="plano_selagem"><option value="CONFORME">CONFORME</option><option value="NÃO CONFORME">NÃO CONFORME</option></select></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="step" data-step="4" data-title="Ensaios">
+        <div class="card"><div class="cardHead"><div><span>06</span><h3>Ensaios e inspeção geral</h3></div><p>Resultado dos ensaios.</p></div>
+          <div class="testGrid">
+            <div class="testCard"><span>9</span><h4>Marcha em vazio</h4><select id="marcha_em_vazio"><option value="APROVADO">APROVADO</option><option value="REPROVADO">REPROVADO</option><option value="N/A">NÃO REALIZADO</option></select></div>
+            <div class="testCard"><span>10</span><h4>Exame do registrador</h4><select id="exame_registrador"><option value="APROVADO">APROVADO</option><option value="REPROVADO">REPROVADO</option><option value="N/A">NÃO REALIZADO</option></select></div>
+            <div class="testCard"><span>11</span><h4>Ensaio de exatidão</h4><select id="ensaio_exatidao"><option value="APROVADO">APROVADO</option><option value="REPROVADO">REPROVADO</option><option value="N/A">NÃO REALIZADO</option></select></div>
+          </div>
+          <div class="grid topGap">
+            <div class="field"><label>Inspeção geral realizada</label><select id="inspecao_geral_realizada"><option value="SIM">SIM</option><option value="NÃO">NÃO (ver observações)</option></select></div>
+            <div class="field"><label>Resultado da inspeção geral</label><select id="inspecao_geral_resultado"><option value="CONFORME">CONFORME</option><option value="NÃO CONFORME">NÃO CONFORME</option></select></div>
+            <div class="resultBox"><span>Conclusão prevista</span><b id="conclusaoPreview">REPROVADO - ver observações</b></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="step" data-step="5" data-title="Energia">
+        <div class="card"><div class="cardHead"><div><span>07</span><h3>Resultados das medições</h3></div><p>Cálculo automático.</p></div>
+          <div class="grid">
+            <div class="field"><label>Leitura kWh inicial</label><input id="leitura_kw_inicial" placeholder="-" inputmode="decimal"></div>
+            <div class="field"><label>Leitura kWh final</label><input id="leitura_kw_final" placeholder="-" inputmode="decimal"></div>
+          </div>
+          <div class="energyTable">
+            <div class="energyHead"><b>Energia Ativa</b><span id="activeLimitLabel">Limite: –</span></div>
+            <div class="energyRow labels"><span>Ensaio</span><span>cosφ</span><span>Erro (%)</span><span>Resultado</span></div>
+            <div class="energyRow"><b>CN</b><input id="ea_cos_cn" value="1"><div class="signedInput"><input id="ea_nominal" inputmode="decimal" oninput="updateEnergyResults()"><button type="button" class="signBtn" onclick="toggleSign('ea_nominal')" aria-label="Alternar sinal">−/+</button></div><strong id="eaResCn">NÃO REALIZADO</strong></div>
+            <div class="energyRow"><b>CP</b><input id="ea_cos_cp" value="1"><div class="signedInput"><input id="ea_pequena" inputmode="decimal" oninput="updateEnergyResults()"><button type="button" class="signBtn" onclick="toggleSign('ea_pequena')" aria-label="Alternar sinal">−/+</button></div><strong id="eaResCp">NÃO REALIZADO</strong></div>
+            <div class="energyRow"><b>CI</b><input id="ea_cos_ci" value="0,5"><div class="signedInput"><input id="ea_indutiva" inputmode="decimal" oninput="updateEnergyResults()"><button type="button" class="signBtn" onclick="toggleSign('ea_indutiva')" aria-label="Alternar sinal">−/+</button></div><strong id="eaResCi">NÃO REALIZADO</strong></div>
+          </div>
+          <div class="reactiveToggle"><div><b>Energia Reativa</b><small>Ative somente quando o ensaio reativo for realizado.</small></div><select id="reativo" onchange="syncReactive()"><option value="NÃO">NÃO</option><option value="SIM">SIM</option></select></div>
+          <div id="reactiveArea" class="reactiveArea disabled">
+            <div class="grid"><div class="field"><label>Leitura kVarh inicial</label><input id="leitura_kvar_inicial" placeholder="-" inputmode="decimal"></div><div class="field"><label>Leitura kVarh final</label><input id="leitura_kvar_final" placeholder="-" inputmode="decimal"></div></div>
+            <div class="energyTable">
+              <div class="energyHead"><b>Energia Reativa</b><span id="reactiveLimitLabel">Limite: –</span></div>
+              <div class="energyRow labels"><span>Ensaio</span><span>senφ</span><span>Erro (%)</span><span>Resultado</span></div>
+              <div class="energyRow"><b>CN</b><span>1 ind</span><div class="signedInput"><input id="er_nominal" inputmode="decimal" oninput="updateEnergyResults()"><button type="button" class="signBtn" onclick="toggleSign('er_nominal')" aria-label="Alternar sinal">−/+</button></div><strong id="erResCn">NÃO REALIZADO</strong></div>
+              <div class="energyRow"><b>CP</b><span>1 ind</span><div class="signedInput"><input id="er_pequena" inputmode="decimal" oninput="updateEnergyResults()"><button type="button" class="signBtn" onclick="toggleSign('er_pequena')" aria-label="Alternar sinal">−/+</button></div><strong id="erResCp">NÃO REALIZADO</strong></div>
+              <div class="energyRow"><b>CI</b><span>0,5 ind</span><div class="signedInput"><input id="er_indutiva" inputmode="decimal" oninput="updateEnergyResults()"><button type="button" class="signBtn" onclick="toggleSign('er_indutiva')" aria-label="Alternar sinal">−/+</button></div><strong id="erResCi">NÃO REALIZADO</strong></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="step" data-step="6" data-title="Observações">
+        <div class="card"><div class="cardHead"><div><span>08</span><h3>Observações</h3></div><p>Até 4 observações.</p></div>
+          <div class="grid">
+            <div class="field span2"><label>Pesquisar observação</label><input id="obsSearch" placeholder="Ex.: 34 ou aquecimento no borne" oninput="renderObservationSearch(this.value)"><div id="obsResults" class="obsResults"></div></div>
+            <div class="field span2"><label>Selecionadas</label><div id="selectedObs" class="selectedObs"><span class="muted">Nenhuma observação selecionada.</span></div></div>
+            <div class="field span2"><label>Portaria da observação</label><input id="observacao_portaria" autocomplete="off" placeholder="Digite ou toque para escolher" onfocus="renderPortariaSearch(this.value)" oninput="renderPortariaSearch(this.value)"><div id="portariaResults" class="modelResults portariaResults"></div></div>
+            <div class="field"><label>Avaliação / Parecer interno</label><select id="avaliacao_parecer"><option value="-">-</option><option value="PI">PI</option><option value="DF">DF</option><option value="BE">BE</option></select></div>
+            <div class="field span2"><label>Observação livre</label><textarea id="observacao_livre" rows="4"></textarea></div>
+          </div>
+        </div>
+        <div class="card"><div class="cardHead"><div><span>09</span><h3>Comparecimento</h3></div></div>
+          <div class="grid">
+            <div class="field"><label>Presencial</label><select id="presencial"><option value="">EM BRANCO / NÃO PRESENCIAL</option><option value="Verificação metrológica foi acompanhada por: __________________________________________________________">VERIFICAÇÃO ACOMPANHADA POR</option></select></div>
+            <div class="field"><label>Comparecimento</label><select id="comparecimento"><option value="NAO_COMPARECEU">CLIENTE NÃO COMPARECEU</option><option value="COMPARECEU">CLIENTE COMPARECEU</option></select></div>
+            <div class="field span2"><label>Dados de quem presenciou (RG/CPF/CNPJ)</label><input id="dados_presencial"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="step" data-step="7" data-title="Revisão">
+        <div class="card"><div class="cardHead"><div><span>10</span><h3>Revisão do Espelho</h3></div><p>Confira antes de enviar.</p></div>
+          <div id="reviewGrid" class="reviewGrid"></div>
+          <div id="reviewWarnings" class="reviewWarnings"></div>
+        </div>
+        <div class="finishCard"><div><span class="eyebrow">PONTE ID CAMPS</span><h3>Pronto para finalizar?</h3><p>Gera o JSON para envio ao ID CAMPS.</p></div><button class="primary big" onclick="exportBridge()">FINALIZAR E GERAR JSON</button></div>
+      </section>
+    </form>
+
+    <div class="navFooter"><button id="prevBtn" class="secondary" onclick="prevStep()">← ANTERIOR</button><div><span id="stepLabel">Etapa 1 de 8</span><div class="progress"><i id="progressBar"></i></div></div><button id="nextBtn" class="primary" onclick="nextStep()">PRÓXIMO →</button></div>
+  </section>
+</main>
+
+<nav id="bottomNav" class="bottomNav">
+  <button class="navItem active" data-tab="home" type="button" onclick="switchMainTab('home')"><span class="navIcon">⌂</span><span>Início</span></button>
+  <button class="navItem" data-tab="laudos" type="button" onclick="switchMainTab('laudos')"><span class="navIcon">≡</span><span>Laudos</span></button>
+  <button class="navItem" data-tab="historico" type="button" onclick="switchMainTab('historico')"><span class="navIcon">◷</span><span>Histórico</span></button>
+</nav>
+
+<div id="toast" class="toast"></div>
+<div id="modal" class="modal hidden"><div class="modalBox"><h3 id="modalTitle">Aviso</h3><p id="modalText"></p><div id="modalActions" class="modalActions"></div></div></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

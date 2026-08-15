@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "ID LAUDO",
+  "short_name": "ID LAUDO",
+  "description": "Espelho Digital e ponte para o ID CAMPS Laudos",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#eef3f7",
+  "theme_color": "#0a3b62",
+  "icons": [
+    {"src":"/static/assets/ID_LAUDO.png","sizes":"256x256","type":"image/png","purpose":"any maskable"}
+  ]
+}
