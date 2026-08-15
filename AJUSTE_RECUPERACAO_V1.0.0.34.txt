@@ -1,4 +1,4 @@
-ID LAUDO V1.0.0.34 - AJUSTE DE RECUPERACAO DE SENHA
+ID LAUDO V1.0.0.35 - AJUSTE DE RECUPERACAO DE SENHA
 
 1. A tela Criar nova senha abre imediatamente quando o link ja contem access_token.
 2. A validacao da sessao ocorre em segundo plano, sem bloquear a digitacao.

@@ -22,3 +22,13 @@ services:
         sync: false
       - key: ID_LAUDO_PUBLIC_URL
         value: "https://id-laudo-api.onrender.com"
+      - key: FIREBASE_API_KEY
+        sync: false
+      - key: FIREBASE_APP_ID
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_SENDER_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false

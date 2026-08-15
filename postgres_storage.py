@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.34"
+APP_VERSION = "1.0.0.35"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -104,6 +104,18 @@ notifications = Table(
     Column("mensagem", Text, nullable=False, default=""),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("read_at", DateTime(timezone=True), nullable=True),
+)
+
+push_devices = Table(
+    "push_devices", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("profile_id", Integer, nullable=False),
+    Column("token", Text, nullable=False, unique=True),
+    Column("platform", String(40), nullable=False, default="ANDROID"),
+    Column("device_name", String(180), nullable=False, default="Android"),
+    Column("active", Boolean, nullable=False, default=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
 catalog_models = Table(
@@ -404,6 +416,76 @@ def list_notifications(limit: int = 100) -> list[dict]:
                 d[k] = d[k].isoformat(timespec="seconds")
         out.append(d)
     return out
+
+
+
+def archive_notification(notification_id: int) -> bool:
+    """Exclusão lógica: some da caixa do painel, mas mantém trilha de auditoria."""
+    ensure_db()
+    with engine.begin() as con:
+        result = con.execute(
+            update(notifications)
+            .where(notifications.c.id == int(notification_id))
+            .values(status="EXCLUIDA", read_at=now_dt())
+        )
+    return bool(result.rowcount)
+
+
+def register_push_device(profile_id: int, token: str, device_name: str = "Android") -> dict:
+    ensure_db()
+    token = str(token or "").strip()
+    if not token:
+        raise ValueError("Token FCM não informado.")
+    now = now_dt()
+    values = {
+        "profile_id": int(profile_id),
+        "token": token,
+        "platform": "ANDROID",
+        "device_name": str(device_name or "Android").strip()[:180] or "Android",
+        "active": True,
+        "updated_at": now,
+    }
+    with engine.begin() as con:
+        existing = con.execute(select(push_devices).where(push_devices.c.token == token)).first()
+        if existing:
+            con.execute(update(push_devices).where(push_devices.c.token == token).values(**values))
+        else:
+            con.execute(insert(push_devices).values(created_at=now, **values))
+        row = con.execute(select(push_devices).where(push_devices.c.token == token)).first()
+    d = dict(row._mapping) if row else {}
+    for k in ("created_at", "updated_at"):
+        if isinstance(d.get(k), datetime):
+            d[k] = d[k].isoformat(timespec="seconds")
+    d.pop("token", None)
+    return d
+
+
+def unregister_push_devices(profile_id: int, token: str = "") -> int:
+    ensure_db()
+    stmt = update(push_devices).where(push_devices.c.profile_id == int(profile_id))
+    token = str(token or "").strip()
+    if token:
+        stmt = stmt.where(push_devices.c.token == token)
+    with engine.begin() as con:
+        result = con.execute(stmt.values(active=False, updated_at=now_dt()))
+    return int(result.rowcount or 0)
+
+
+def list_push_tokens_for_record(record_id: int) -> list[str]:
+    ensure_db()
+    with engine.connect() as con:
+        record = con.execute(
+            select(espelhos.c.created_by_profile_id).where(espelhos.c.id == int(record_id))
+        ).first()
+        if not record or not record[0]:
+            return []
+        rows = con.execute(
+            select(push_devices.c.token).where(
+                push_devices.c.profile_id == int(record[0]),
+                push_devices.c.active.is_(True),
+            )
+        ).all()
+    return [str(r[0]) for r in rows if str(r[0] or "").strip()]
 
 
 def list_app_users() -> list[dict]:

@@ -1,0 +1,14 @@
+ID LAUDO - ATUALIZAR RENDER V1.0.0.35
+
+1. Substitua os arquivos do repositório do servidor pela V1.0.0.35.
+2. No Render: Manual Deploy > Deploy latest commit.
+3. As variáveis existentes de Supabase continuam iguais.
+4. Para PUSH com o aplicativo fechado, configure as variáveis descritas em:
+   CONFIGURAR_FIREBASE_PUSH_V1.0.0.35.txt
+
+Novidades:
+- Firebase Cloud Messaging (push real) preparado.
+- Registro do dispositivo por usuário.
+- Push em DEVOLVIDO e LAUDO_CRIADO.
+- Exclusão lógica de notificações pelo Painel ID CAMPS.
+- O sistema continua funcional mesmo se o Firebase ainda não estiver configurado.

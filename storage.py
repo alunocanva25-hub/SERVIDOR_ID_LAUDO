@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.34"
+APP_VERSION = "1.0.0.35"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -279,6 +279,19 @@ def list_notifications(limit: int = 100) -> list[dict]:
     # No modo local não há Central de Notificações remota.
     return []
 
+
+
+def archive_notification(notification_id: int) -> bool:
+    return False
+
+def register_push_device(profile_id: int, token: str, device_name: str = "Android") -> dict:
+    return {"profile_id": int(profile_id), "device_name": str(device_name or "Android"), "active": False}
+
+def unregister_push_devices(profile_id: int, token: str = "") -> int:
+    return 0
+
+def list_push_tokens_for_record(record_id: int) -> list[str]:
+    return []
 
 def list_app_users() -> list[dict]:
     ensure_db()

@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.0.0.34';
+const VERSION = 'V1.0.0.35';
 const LIMITS = {
   'A (2%)': {ativa:4.00, reativa:4.00},
   'B (1%)': {ativa:1.30, reativa:2.60},
@@ -48,6 +48,8 @@ let passwordChangeMode = 'forced';
 const AUTH_STORAGE_KEY = 'idlaudo.auth.v27';
 const LEGACY_AUTH_STORAGE_KEYS = ['idlaudo.auth.v26','idlaudo.auth.v25'];
 let authGateState = 'BOOT'; // BOOT | LOCKED | AUTHENTICATED | LOCAL_BYPASS
+let pushSetupInFlight = false;
+let pushRegisteredToken = '';
 
 function getUiMode(){ return 'APP'; }
 
@@ -375,6 +377,7 @@ async function idLaudoBiometricUnlocked(){
     if(currentUser?.must_change_password){showChangePassword('forced');return;}
     if(!unlockApp('BIOMETRIC'))throw new Error('Não foi possível validar sua conta.');
     if(!appStarted)await startApp();else{await loadAppConfig();await loadRecords();}
+    offerNotificationsAfterLogin();setupPushNotifications();
   }catch(e){showLoginView();showAuthError(e.message||'Não foi possível entrar com biometria.');try{nativeBridge()?.disableBiometric();}catch{}}
   finally{if(btn){btn.disabled=false;btn.querySelector('span:last-child').textContent='ENTRAR COM BIOMETRIA';}updateBiometricLoginButton();}
 }
@@ -414,6 +417,48 @@ window.idLaudoBiometricCanceled=idLaudoBiometricCanceled;
 window.idLaudoBiometricEnabled=idLaudoBiometricEnabled;
 window.idLaudoBiometricDisabled=idLaudoBiometricDisabled;
 window.idLaudoNotificationPermissionChanged=idLaudoNotificationPermissionChanged;
+
+function nativePushSupported(){try{return !!nativeBridge()?.configurePush;}catch{return false;}}
+async function setupPushNotifications(){
+  if(!currentUser || !nativePushSupported() || pushSetupInFlight)return;
+  pushSetupInFlight=true;
+  try{
+    const cfg=await api('/api/push/config');
+    if(!cfg?.enabled)return;
+    nativeBridge()?.configurePush(
+      String(cfg.api_key||''), String(cfg.app_id||''), String(cfg.project_id||''), String(cfg.sender_id||'')
+    );
+  }catch(e){
+    console.warn('Push não configurado:',e?.message||e);
+  }finally{
+    pushSetupInFlight=false;
+  }
+}
+window.idLaudoPushTokenReady=async function(token){
+  const clean=String(token||'').trim();if(!clean||!currentUser)return;
+  try{
+    await api('/api/push/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:clean,device_name:'ID LAUDO Android'})});
+    pushRegisteredToken=clean;
+  }catch(e){console.warn('Falha ao registrar push:',e?.message||e);}
+};
+window.idLaudoPushTokenError=function(message){console.warn('FCM:',message||'Não disponível');};
+async function unregisterPushDevice(){
+  if(!currentUser)return;
+  let token=pushRegisteredToken;
+  try{token=token||String(nativeBridge()?.getPushToken?.()||'');}catch{}
+  try{await api('/api/push/unregister',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});}catch{}
+  pushRegisteredToken='';
+  try{nativeBridge()?.clearPushOnLogout?.();}catch{}
+}
+function offerNotificationsAfterLogin(){
+  if(!nativeBridge() || notificationPermissionState()==='ATIVADA')return;
+  let asked=false;try{asked=localStorage.getItem('idlaudo.notifications.offer.v35')==='1';}catch{}
+  if(asked)return;try{localStorage.setItem('idlaudo.notifications.offer.v35','1');}catch{}
+  setTimeout(()=>modal('Ativar notificações','Permita as notificações para receber no celular avisos quando um laudo for devolvido para correção ou criado no ID CAMPS.',[
+    ['AGORA NÃO','secondary',closeModal],
+    ['ATIVAR','primary',()=>{closeModal();requestNotificationPermission();}]
+  ]),500);
+}
 
 function saveAuthState(){
   try{localStorage.setItem(AUTH_STORAGE_KEY,JSON.stringify(authState||{}));}catch{}
@@ -724,10 +769,11 @@ async function loginSubmit(){
     const r=await publicApi('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
     authState={access_token:r.session?.access_token||'',refresh_token:r.session?.refresh_token||''};currentUser=r.user||null;saveAuthState();try{localStorage.setItem('idlaudo.last.email',email);}catch{}setVal('loginPassword','');
     if(currentUser?.must_change_password){showChangePassword('forced');return;}
-    if(!unlockApp('AUTHENTICATED')){showLoginView();showAuthError('Não foi possível validar a sessão. Entre novamente.');return;} if(!appStarted)await startApp(); else {await loadAppConfig();await loadRecords();} offerBiometricAfterLogin();
+    if(!unlockApp('AUTHENTICATED')){showLoginView();showAuthError('Não foi possível validar a sessão. Entre novamente.');return;} if(!appStarted)await startApp(); else {await loadAppConfig();await loadRecords();} offerBiometricAfterLogin(); offerNotificationsAfterLogin(); setupPushNotifications();
   }catch(e){showAuthError(e.message)}finally{if(btn){btn.disabled=false;btn.textContent='ENTRAR';}}
 }
 async function logoutApp(){
+  try{await unregisterPushDevice();}catch{}
   try{if(authState.access_token)await api('/api/auth/logout',{method:'POST'});}catch{}
   try{nativeBridge()?.clearBiometricOnLogout();}catch{}clearAuthState();authGateState='LOCKED';nativeSetAuthenticated(false);document.body.classList.remove('settings-mode','editor-mode');showLoginView();
 }
@@ -823,6 +869,7 @@ async function startApp(){
     if($('sourceInfo')) $('sourceInfo').textContent=src;
     buildStepper(); indexFormStructure(); fillPeople(); fillManufacturers(); fillPortarias(); bindInputModes(); sanitizeNumericFields(); bindProcessToToi(); setDefaults(); updateBottomNav(); await loadAppConfig(); await loadRecords();
     appStarted=true;
+    if(currentUser){offerNotificationsAfterLogin();setupPushNotifications();}
   }catch(e){ modal('ID LAUDO',`Não foi possível carregar a base de cadastros.\n\n${e.message}`); }
   // Online APK: não registra Service Worker; evita carregar interface antiga em cache.
   purgeLegacyUiCache();

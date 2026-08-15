@@ -19,8 +19,10 @@ from storage_backend import (
     list_app_users, save_app_user, delete_app_user, get_app_setting, set_app_setting,
     list_notifications, backend_info, bootstrap_admin_info, get_app_user, bind_auth_profile,
     mark_password_changed, set_app_user_active, require_password_change_by_email,
+    archive_notification, register_push_device, unregister_push_devices, list_push_tokens_for_record,
 )
 import auth_service
+import push_service
 
 RESOURCE_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 STATIC_DIR = RESOURCE_BASE / "static"
@@ -62,6 +64,7 @@ def _runtime_backend_info() -> dict:
         info["auth"] = "ATIVO" if ac.get("enabled") else "CONFIGURAR"
     else:
         info["auth"] = "DESATIVADO"
+    info["push"] = "FCM_ATIVO" if push_service.configured() else "CONFIGURAR"
     return info
 
 
@@ -462,6 +465,47 @@ def api_notifications(request: Request):
     return {"ok": True, "items": list_notifications()}
 
 
+@app.delete("/api/notifications/{notification_id}")
+def api_notification_delete(notification_id: int, request: Request):
+    _require_admin(request)
+    if not archive_notification(notification_id):
+        raise HTTPException(404, "Notificação não encontrada.")
+    return {"ok": True}
+
+
+@app.get("/api/push/config")
+def api_push_config(request: Request):
+    # Somente configuração pública. Nenhuma credencial administrativa é exposta.
+    cfg = push_service.client_config()
+    return {"ok": True, "enabled": push_service.configured(), **cfg}
+
+
+@app.post("/api/push/register")
+def api_push_register(request: Request, payload: dict = Body(...)):
+    profile = getattr(request.state, "profile", None) or {}
+    profile_id = profile.get("id")
+    if not profile_id:
+        raise HTTPException(401, "Sessão necessária para registrar notificações.")
+    token = clean(payload.get("token"))
+    if not token:
+        raise HTTPException(400, "Token FCM não informado.")
+    try:
+        item = register_push_device(int(profile_id), token, clean(payload.get("device_name") or "Android"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "item": item, "push": push_service.status()}
+
+
+@app.post("/api/push/unregister")
+def api_push_unregister(request: Request, payload: dict = Body(default={})):
+    profile = getattr(request.state, "profile", None) or {}
+    profile_id = profile.get("id")
+    if not profile_id:
+        raise HTTPException(401, "Sessão necessária.")
+    removed = unregister_push_devices(int(profile_id), clean(payload.get("token")))
+    return {"ok": True, "updated": removed}
+
+
 @app.get("/api/config")
 def config_get(request: Request):
     profile = getattr(request.state, "profile", None) or {}
@@ -606,16 +650,28 @@ def record(record_id: int, request: Request):
 @app.post("/api/records/{record_id}/status")
 def record_status(record_id: int, request: Request, payload: dict = Body(...)):
     _require_admin(request)
-    # Endpoint preparado para o futuro módulo NOTIFICAÇÕES do ID CAMPS Laudos.
+    status = clean(payload.get("status")).upper()
+    message = clean(payload.get("message"))
     item = update_record_status(
         record_id,
-        clean(payload.get("status")),
-        clean(payload.get("message")),
+        status,
+        message,
         clean(payload.get("remote_laudo_numero")),
     )
     if not item:
         raise HTTPException(404, "Espelho não encontrado.")
-    return {"ok": True, "item": item}
+
+    push_result = {"attempted": 0, "sent": 0, "failed": 0, "configured": push_service.configured()}
+    if status in {STATUS_DEVOLVIDO, STATUS_CRIADO}:
+        try:
+            tokens = list_push_tokens_for_record(record_id)
+            push_result = push_service.send_status_push(
+                tokens, status=status, record=item, message=message
+            )
+        except Exception as exc:
+            # A atualização do laudo nunca deve falhar apenas porque o push ficou indisponível.
+            push_result = {"attempted": 0, "sent": 0, "failed": 0, "configured": push_service.configured(), "error": str(exc)}
+    return {"ok": True, "item": item, "push": push_result}
 
 
 @app.post("/api/records/save")

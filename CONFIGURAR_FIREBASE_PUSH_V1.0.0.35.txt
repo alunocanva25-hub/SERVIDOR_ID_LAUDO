@@ -1,0 +1,54 @@
+ID LAUDO V1.0.0.35 — PUSH REAL NO CELULAR (FIREBASE CLOUD MESSAGING)
+
+OBJETIVO
+Receber notificação Android mesmo quando o ID LAUDO estiver fechado ou em segundo plano,
+por exemplo quando o Painel ID CAMPS devolve um laudo para correção.
+
+1) FIREBASE
+- Crie/abra um projeto no Firebase Console.
+- Adicione um aplicativo Android com o pacote:
+  br.com.idcamps.idlaudo
+- Baixe google-services.json.
+  Ele é usado SOMENTE para copiar os identificadores públicos abaixo; o APK V35 não exige
+  colocar esse arquivo dentro do projeto porque inicializa o Firebase em runtime.
+
+2) VARIÁVEIS PÚBLICAS NO RENDER
+Do google-services.json:
+- FIREBASE_PROJECT_ID = project_info.project_id
+- FIREBASE_SENDER_ID = project_info.project_number
+- FIREBASE_APP_ID = client correspondente ao pacote br.com.idcamps.idlaudo -> client_info.mobilesdk_app_id
+- FIREBASE_API_KEY = mesmo client -> api_key[0].current_key
+
+Você pode usar EXTRAIR_FIREBASE_CONFIG.py para imprimir esses quatro nomes.
+
+3) CREDENCIAL DO SERVIDOR
+No Firebase Console > Configurações do projeto > Contas de serviço:
+- Gere uma nova chave privada.
+- Abra o JSON e copie TODO o conteúdo para uma variável secreta no Render:
+  FIREBASE_SERVICE_ACCOUNT_JSON
+
+IMPORTANTE:
+- FIREBASE_SERVICE_ACCOUNT_JSON é SECRETA.
+- Não envie essa chave na conversa e não coloque no GitHub/APK.
+
+4) RENDER
+Após salvar as variáveis, faça um novo deploy da V1.0.0.35.
+Abra:
+  https://id-laudo-api.onrender.com/api/health
+O backend deve mostrar push = FCM_ATIVO.
+
+5) CELULAR
+- Instale o APK V1.0.0.35.
+- Faça login.
+- Autorize notificações quando o Android solicitar.
+- O app registra o token FCM automaticamente na conta logada.
+
+TESTE
+No Painel ID CAMPS:
+- abra uma notificação;
+- DEVOLVER;
+- informe o motivo.
+O celular deve receber o aviso mesmo com o ID LAUDO fechado.
+
+Se push = CONFIGURAR, o restante do sistema continua funcionando; apenas o aviso em background
+fica indisponível até as variáveis do Firebase serem concluídas.
