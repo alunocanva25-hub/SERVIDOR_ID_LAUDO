@@ -1,0 +1,7 @@
+ID LAUDO V1.0.0.33 - AJUSTE DE RECUPERACAO DE SENHA
+
+1. A tela de login nao e mais exibida durante a validacao do link de recuperacao.
+2. O redirecionamento automatico para idlaudo:// foi removido durante a troca de senha.
+3. O link padrao do Supabase com access_token no fragmento e processado antes de carregar a SDK externa.
+4. A tela CRIAR NOVA SENHA permanece aberta ate o usuario salvar a nova senha.
+5. Retornos alternativos via SDK continuam suportados como fallback.
