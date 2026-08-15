@@ -86,24 +86,48 @@ def auth_enabled() -> bool:
     return auth_requested() and auth_configured()
 
 
+def _valid_public_app_url(value: str) -> str:
+    raw = _clean(value)
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return ""
+    host = (parsed.hostname or "").lower()
+    # Nunca aceite links do painel administrativo do Render como URL pública do app.
+    if host in {"dashboard.render.com", "render.com", "www.render.com"}:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}".rstrip("/")
+
+
 def public_app_url() -> str:
-    raw = _clean(
-        os.environ.get("ID_LAUDO_PUBLIC_URL")
-        or os.environ.get("RENDER_EXTERNAL_URL")
-        or "https://id-laudo-api.onrender.com"
-    )
-    return raw.rstrip("/")
+    # V1.0.0.30: em produção, o próprio Render informa a URL pública correta.
+    # Preferimos RENDER_EXTERNAL_URL para evitar que uma URL do dashboard seja
+    # cadastrada por engano em ID_LAUDO_PUBLIC_URL.
+    candidates = [
+        os.environ.get("RENDER_EXTERNAL_URL"),
+        os.environ.get("ID_LAUDO_PUBLIC_URL"),
+        "https://id-laudo-api.onrender.com",
+    ]
+    for candidate in candidates:
+        valid = _valid_public_app_url(candidate)
+        if valid:
+            return valid
+    return "https://id-laudo-api.onrender.com"
 
 
 def reset_redirect_url() -> str:
-    # V1.0.0.29: recuperação passa primeiro pela URL HTTPS do Render.
-    # Isso evita que clientes de e-mail/navegadores consumam ou percam o fragmento
-    # de sessão ao tentar abrir diretamente um esquema customizado do Android.
-    # Depois, o JavaScript da página encaminha a sessão para idlaudo://password-reset.
-    explicit = _clean(os.environ.get("ID_LAUDO_RESET_REDIRECT_URL"))
-    if explicit.lower().startswith(("http://", "https://")):
+    # Fluxo V30: Supabase -> HTTPS público do Render /password-reset -> APK.
+    # Usar uma rota dedicada impede que o usuário caia na tela inicial.
+    explicit = _valid_public_app_url(os.environ.get("ID_LAUDO_RESET_REDIRECT_URL"))
+    if explicit:
+        if urlparse(explicit).path.rstrip("/") in {"", "/"}:
+            return explicit.rstrip("/") + "/password-reset"
         return explicit.rstrip("/")
-    return public_app_url()
+    return public_app_url().rstrip("/") + "/password-reset"
 
 
 def _headers(key: str, token: str = "") -> dict[str, str]:
@@ -334,5 +358,7 @@ def config_status() -> dict:
         "enabled": auth_enabled(),
         "admin_api": admin_configured(),
         "supabase_url": supabase_url() if auth_configured() else "",
+        "public_app_url": public_app_url(),
         "reset_redirect": reset_redirect_url() if auth_configured() else "",
+        "render_external_url": _clean(os.environ.get("RENDER_EXTERNAL_URL")),
     }

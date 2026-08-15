@@ -203,6 +203,12 @@ def home():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/password-reset")
+def password_reset_page():
+    # Rota dedicada para o retorno do e-mail de recuperação do Supabase.
+    return FileResponse(STATIC_DIR / "index.html")
+
+
 @app.get("/manifest.webmanifest")
 def manifest():
     return FileResponse(STATIC_DIR / "manifest.webmanifest", media_type="application/manifest+json")
