@@ -17,7 +17,7 @@ from storage_backend import (
     STATUS_PRONTO, STATUS_RASCUNHO, STATUS_REVISAO, app_data_dir, delete_record,
     export_bridge, get_record, list_records, save_record, update_record_status,
     list_app_users, save_app_user, delete_app_user, get_app_setting, set_app_setting,
-    backend_info,
+    backend_info, bootstrap_admin_info,
 )
 
 RESOURCE_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
@@ -198,6 +198,7 @@ def config_get():
         "users": list_app_users(),
         "form_visibility": get_app_setting("form_visibility", {}),
         "backend": backend_info(),
+        "primary_admin": bootstrap_admin_info(),
     }
 
 
@@ -212,7 +213,11 @@ def config_user_save(payload: dict = Body(...)):
 
 @app.delete("/api/config/users/{user_id}")
 def config_user_delete(user_id: int):
-    if not delete_app_user(user_id):
+    try:
+        deleted = delete_app_user(user_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if not deleted:
         raise HTTPException(404, "Usuário não encontrado.")
     return {"ok": True}
 

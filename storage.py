@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.22"
+APP_VERSION = "1.0.0.23"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -21,6 +21,9 @@ VALID_STATUSES = {
     STATUS_RASCUNHO, STATUS_PRONTO, STATUS_AGUARDANDO,
     STATUS_REVISAO, STATUS_DEVOLVIDO, STATUS_CRIADO,
 }
+
+BOOTSTRAP_ADMIN_EMAIL = str(os.environ.get("ID_LAUDO_BOOTSTRAP_ADMIN_EMAIL") or "dayvisant4@gmail.com").strip().lower()
+BOOTSTRAP_ADMIN_USERNAME = str(os.environ.get("ID_LAUDO_BOOTSTRAP_ADMIN_USERNAME") or "ADMIN").strip() or "ADMIN"
 
 
 def documents_dir() -> Path:
@@ -105,6 +108,8 @@ def ensure_db() -> Path:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 nome TEXT NOT NULL,
                 usuario TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                email TEXT,
+                is_system_admin INTEGER NOT NULL DEFAULT 0,
                 perfil TEXT NOT NULL DEFAULT 'OPERADOR',
                 ativo INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
@@ -112,6 +117,26 @@ def ensure_db() -> Path:
             )
             """
         )
+        user_cols = {r[1] for r in con.execute("PRAGMA table_info(app_users)").fetchall()}
+        if "email" not in user_cols:
+            con.execute("ALTER TABLE app_users ADD COLUMN email TEXT")
+        if "is_system_admin" not in user_cols:
+            con.execute("ALTER TABLE app_users ADD COLUMN is_system_admin INTEGER NOT NULL DEFAULT 0")
+        row = con.execute(
+            "SELECT id FROM app_users WHERE lower(coalesce(email,''))=? OR upper(usuario)=upper(?) ORDER BY id LIMIT 1",
+            (BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_USERNAME),
+        ).fetchone()
+        now = now_iso()
+        if row:
+            con.execute(
+                "UPDATE app_users SET email=?,usuario=?,perfil='ADMIN',ativo=1,is_system_admin=1,updated_at=? WHERE id=?",
+                (BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_USERNAME, now, int(row[0])),
+            )
+        else:
+            con.execute(
+                "INSERT INTO app_users(nome,usuario,email,is_system_admin,perfil,ativo,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                ("Administrador principal", BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_EMAIL, 1, "ADMIN", 1, now, now),
+            )
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS app_settings(
@@ -253,7 +278,9 @@ def list_app_users() -> list[dict]:
     ensure_db()
     with sqlite3.connect(db_path()) as con:
         con.row_factory = sqlite3.Row
-        rows = con.execute("SELECT id,nome,usuario,perfil,ativo,created_at,updated_at FROM app_users ORDER BY nome COLLATE NOCASE, id").fetchall()
+        rows = con.execute(
+            "SELECT id,nome,usuario,email,perfil,ativo,created_at,updated_at FROM app_users WHERE coalesce(is_system_admin,0)=0 ORDER BY nome COLLATE NOCASE, id"
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -261,10 +288,15 @@ def save_app_user(data: dict, user_id: int | None = None) -> dict:
     ensure_db()
     nome = str(data.get("nome") or "").strip()
     usuario = str(data.get("usuario") or "").strip()
+    email = str(data.get("email") or "").strip().lower() or None
     perfil = str(data.get("perfil") or "OPERADOR").strip().upper()
     ativo = 1 if bool(data.get("ativo", True)) else 0
     if not nome or not usuario:
         raise ValueError("Nome e usuário são obrigatórios.")
+    if usuario.upper() == BOOTSTRAP_ADMIN_USERNAME.upper():
+        raise ValueError("Este usuário é reservado ao administrador principal.")
+    if email and email == BOOTSTRAP_ADMIN_EMAIL:
+        raise ValueError("Este e-mail é reservado ao administrador principal.")
     if perfil not in {"ADMIN", "OPERADOR"}:
         perfil = "OPERADOR"
     now = now_iso()
@@ -272,20 +304,23 @@ def save_app_user(data: dict, user_id: int | None = None) -> dict:
         with sqlite3.connect(db_path()) as con:
             con.row_factory = sqlite3.Row
             if user_id:
+                protected = con.execute("SELECT is_system_admin FROM app_users WHERE id=?", (int(user_id),)).fetchone()
+                if protected and int(protected[0] or 0):
+                    raise ValueError("O administrador principal não pode ser alterado por este menu.")
                 cur = con.execute(
-                    "UPDATE app_users SET nome=?,usuario=?,perfil=?,ativo=?,updated_at=? WHERE id=?",
-                    (nome, usuario, perfil, ativo, now, int(user_id)),
+                    "UPDATE app_users SET nome=?,usuario=?,email=?,perfil=?,ativo=?,updated_at=? WHERE id=?",
+                    (nome, usuario, email, perfil, ativo, now, int(user_id)),
                 )
                 if cur.rowcount == 0:
                     user_id = None
             if not user_id:
                 cur = con.execute(
-                    "INSERT INTO app_users(nome,usuario,perfil,ativo,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                    (nome, usuario, perfil, ativo, now, now),
+                    "INSERT INTO app_users(nome,usuario,email,is_system_admin,perfil,ativo,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (nome, usuario, email, 0, perfil, ativo, now, now),
                 )
                 user_id = int(cur.lastrowid)
             con.commit()
-            row = con.execute("SELECT id,nome,usuario,perfil,ativo,created_at,updated_at FROM app_users WHERE id=?", (int(user_id),)).fetchone()
+            row = con.execute("SELECT id,nome,usuario,email,perfil,ativo,created_at,updated_at FROM app_users WHERE id=?", (int(user_id),)).fetchone()
         return dict(row)
     except sqlite3.IntegrityError as exc:
         raise ValueError("Já existe um usuário com esse login.") from exc
@@ -294,9 +329,19 @@ def save_app_user(data: dict, user_id: int | None = None) -> dict:
 def delete_app_user(user_id: int) -> bool:
     ensure_db()
     with sqlite3.connect(db_path()) as con:
+        protected = con.execute("SELECT is_system_admin FROM app_users WHERE id=?", (int(user_id),)).fetchone()
+        if protected and int(protected[0] or 0):
+            raise ValueError("O administrador principal não pode ser excluído.")
         cur = con.execute("DELETE FROM app_users WHERE id=?", (int(user_id),))
         con.commit()
         return cur.rowcount > 0
+
+
+def bootstrap_admin_info() -> dict:
+    ensure_db()
+    with sqlite3.connect(db_path()) as con:
+        row = con.execute("SELECT perfil,ativo FROM app_users WHERE coalesce(is_system_admin,0)=1 LIMIT 1").fetchone()
+    return {"configured": bool(row), "perfil": row[0] if row else None, "ativo": bool(row[1]) if row else False, "login_mode": "EMAIL_SUPABASE_AUTH" if row else None}
 
 
 def get_app_setting(key: str, default=None):

@@ -1,0 +1,17 @@
+ID LAUDO V1.0.0.23 - ATUALIZAÇÃO DO RENDER
+
+Este repositório GitHub usa os arquivos de SERVIDOR_ID_LAUDO diretamente na raiz.
+Envie/substitua o conteúdo desta pasta no repositório SERVIDOR_ID_LAUDO e faça novo deploy no Render.
+
+Root Directory no Render: DEIXAR VAZIO.
+Build Command: pip install -r requirements.txt
+Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
+Health Check: /api/health
+
+Environment:
+DATABASE_URL = sua conexão Supabase atual
+ID_LAUDO_CATALOG_BACKEND = postgres
+ID_LAUDO_AUTH_ENABLED = false
+ID_LAUDO_BOOTSTRAP_ADMIN_EMAIL = dayvisant4@gmail.com
+
+A senha padrão não é gravada no APK. O e-mail acima fica reservado como ADMIN principal.

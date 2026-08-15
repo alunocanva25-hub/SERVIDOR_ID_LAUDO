@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0a3b62">
-  <title>ID LAUDO V1.0.0.22</title>
+  <title>ID LAUDO V1.0.0.23</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/assets/ID_LAUDO.png">
   <link rel="stylesheet" href="/static/style.css">
@@ -112,6 +112,7 @@
         <div class="settingsGrid userCreateGrid">
           <div class="field"><label>Nome</label><input id="cfgUserName" autocomplete="off"></div>
           <div class="field"><label>Usuário</label><input id="cfgUserLogin" autocomplete="off"></div>
+          <div class="field"><label>E-mail</label><input id="cfgUserEmail" type="email" inputmode="email" autocomplete="off" placeholder="usuario@empresa.com"></div>
           <div class="field"><label>Perfil</label><select id="cfgUserRole"><option value="OPERADOR">OPERADOR</option><option value="ADMIN">ADMIN</option></select></div>
           <button class="primary cfgAddUser" type="button" onclick="saveConfigUser()">ADICIONAR</button>
         </div>

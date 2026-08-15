@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: id-laudo-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: ID_LAUDO_CATALOG_BACKEND
+        value: postgres
+      - key: ID_LAUDO_AUTH_ENABLED
+        value: "false"
+      - key: ID_LAUDO_BOOTSTRAP_ADMIN_EMAIL
+        value: "dayvisant4@gmail.com"

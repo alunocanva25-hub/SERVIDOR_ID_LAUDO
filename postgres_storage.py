@@ -5,16 +5,18 @@ from pathlib import Path
 import json
 import os
 import re
+import sqlite3
 import uuid
 
 from sqlalchemy import (
     Boolean, Column, DateTime, Integer, JSON, MetaData, String, Table, Text, Uuid,
-    create_engine, delete, desc, insert, select, update
+    create_engine, delete, desc, insert, select, update, text
 )
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.22"
+APP_VERSION = "1.0.0.23"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -72,6 +74,8 @@ profiles = Table(
     "profiles", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("auth_user_id", Uuid(as_uuid=False), unique=True, nullable=True),
+    Column("email", String(320), nullable=True),
+    Column("is_system_admin", Boolean, nullable=False, default=False),
     Column("nome", String(180), nullable=False),
     Column("usuario", String(120), nullable=False, unique=True),
     Column("perfil", String(30), nullable=False, default="OPERADOR"),
@@ -144,8 +148,97 @@ def app_data_dir() -> Path:
     return p
 
 
+BOOTSTRAP_ADMIN_EMAIL = str(os.environ.get("ID_LAUDO_BOOTSTRAP_ADMIN_EMAIL") or "dayvisant4@gmail.com").strip().lower()
+BOOTSTRAP_ADMIN_USERNAME = str(os.environ.get("ID_LAUDO_BOOTSTRAP_ADMIN_USERNAME") or "ADMIN").strip() or "ADMIN"
+_BOOTSTRAP_DONE = False
+
+
+def _ensure_online_migrations() -> None:
+    """Aplica migrações idempotentes necessárias em bancos já existentes."""
+    with engine.begin() as con:
+        con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS email varchar(320)"))
+        con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_system_admin boolean NOT NULL DEFAULT false"))
+        con.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_profiles_email_ci ON public.profiles (lower(email)) WHERE email IS NOT NULL AND btrim(email) <> ''"))
+
+
+def _ensure_bootstrap_admin() -> None:
+    """Garante o administrador principal sem armazenar senha no APK.
+
+    O vínculo futuro com Supabase Auth será feito pelo e-mail.
+    """
+    if not BOOTSTRAP_ADMIN_EMAIL:
+        return
+    now = now_dt()
+    with engine.begin() as con:
+        row = con.execute(text("""
+            SELECT id FROM public.profiles
+            WHERE lower(coalesce(email,'')) = :email
+               OR upper(usuario) = upper(:usuario)
+            ORDER BY CASE WHEN lower(coalesce(email,'')) = :email THEN 0 ELSE 1 END, id
+            LIMIT 1
+        """), {"email": BOOTSTRAP_ADMIN_EMAIL, "usuario": BOOTSTRAP_ADMIN_USERNAME}).first()
+        if row:
+            con.execute(text("""
+                UPDATE public.profiles
+                   SET email=:email, usuario=:usuario, perfil='ADMIN', ativo=true,
+                       is_system_admin=true, updated_at=:updated_at
+                 WHERE id=:id
+            """), {"email": BOOTSTRAP_ADMIN_EMAIL, "usuario": BOOTSTRAP_ADMIN_USERNAME, "updated_at": now, "id": int(row[0])})
+        else:
+            con.execute(text("""
+                INSERT INTO public.profiles(email,is_system_admin,nome,usuario,perfil,ativo,created_at,updated_at)
+                VALUES(:email,true,'Administrador principal',:usuario,'ADMIN',true,:created_at,:updated_at)
+            """), {"email": BOOTSTRAP_ADMIN_EMAIL, "usuario": BOOTSTRAP_ADMIN_USERNAME, "created_at": now, "updated_at": now})
+
+
+def _catalog_source_db() -> Path:
+    return Path(__file__).resolve().parent / "database" / "dados_criacao_laudos.db"
+
+
+def _seed_catalog_if_empty() -> None:
+    """Faz a carga inicial do catálogo legado apenas quando o PostgreSQL está vazio.
+
+    Depois da primeira carga, o PostgreSQL passa a ser a fonte central e não é
+    sobrescrito em cada reinício do Render.
+    """
+    src_path = _catalog_source_db()
+    if not src_path.exists():
+        return
+    with engine.connect() as con:
+        total = int(con.execute(text("SELECT count(*) FROM public.catalog_models")).scalar_one())
+    if total > 0:
+        return
+
+    with sqlite3.connect(src_path) as src:
+        src.row_factory = sqlite3.Row
+        models = [dict(r) for r in src.execute("SELECT * FROM cadastro_modelos").fetchall()]
+        observations = [dict(r) for r in src.execute("SELECT * FROM cadastro_observacoes").fetchall()]
+        people = [dict(r) for r in src.execute("SELECT * FROM cadastro_pessoas").fetchall()]
+
+    with engine.begin() as dst:
+        for r in models:
+            dst.execute(pg_insert(catalog_models).values(**{k: r.get(k) for k in [
+                "id","fabricante","modelo","portaria","classe","elementos","corrente_nominal",
+                "corrente_maxima","tensao_nominal","frequencia","constante","portaria_rtm"
+            ]}).on_conflict_do_nothing(index_elements=[catalog_models.c.id]))
+        for r in observations:
+            dst.execute(pg_insert(catalog_observations).values(
+                id=r.get("id"), observacao=r.get("observacao"), conclusao=r.get("conclusao")
+            ).on_conflict_do_nothing(index_elements=[catalog_observations.c.id]))
+        for r in people:
+            dst.execute(pg_insert(catalog_people).values(
+                id=r.get("id"), categoria=r.get("categoria"), nome=r.get("nome")
+            ).on_conflict_do_nothing(index_elements=[catalog_people.c.id]))
+
+
 def ensure_db() -> Path:
+    global _BOOTSTRAP_DONE
     metadata.create_all(engine)
+    if not _BOOTSTRAP_DONE:
+        _ensure_online_migrations()
+        _ensure_bootstrap_admin()
+        _seed_catalog_if_empty()
+        _BOOTSTRAP_DONE = True
     return app_data_dir()
 
 
@@ -275,11 +368,15 @@ def update_record_status(record_id: int, status: str, message: str = "", remote_
 def list_app_users() -> list[dict]:
     ensure_db()
     with engine.connect() as con:
-        rows = con.execute(select(profiles).order_by(profiles.c.nome, profiles.c.id)).all()
+        # O administrador principal fica reservado internamente por enquanto.
+        rows = con.execute(
+            select(profiles).where(profiles.c.is_system_admin.is_(False)).order_by(profiles.c.nome, profiles.c.id)
+        ).all()
     out = []
     for r in rows:
         d = dict(r._mapping)
         d["ativo"] = 1 if d.get("ativo") else 0
+        d.pop("is_system_admin", None)
         for k in ("created_at", "updated_at"):
             if isinstance(d.get(k), datetime): d[k] = d[k].isoformat(timespec="seconds")
         out.append(d)
@@ -290,10 +387,15 @@ def save_app_user(data: dict, user_id: int | None = None) -> dict:
     ensure_db()
     nome = str(data.get("nome") or "").strip()
     usuario = str(data.get("usuario") or "").strip()
+    email = str(data.get("email") or "").strip().lower() or None
     perfil = str(data.get("perfil") or "OPERADOR").strip().upper()
     ativo = bool(data.get("ativo", True))
     if not nome or not usuario:
         raise ValueError("Nome e usuário são obrigatórios.")
+    if usuario.upper() == BOOTSTRAP_ADMIN_USERNAME.upper():
+        raise ValueError("Este usuário é reservado ao administrador principal.")
+    if email and email == BOOTSTRAP_ADMIN_EMAIL:
+        raise ValueError("Este e-mail é reservado ao administrador principal.")
     if perfil not in {"ADMIN", "OPERADOR"}:
         perfil = "OPERADOR"
     now = now_dt()
@@ -301,29 +403,58 @@ def save_app_user(data: dict, user_id: int | None = None) -> dict:
         with engine.begin() as con:
             current = con.execute(select(profiles).where(profiles.c.id == int(user_id))).first() if user_id else None
             if current:
+                if bool(current._mapping.get("is_system_admin")):
+                    raise ValueError("O administrador principal não pode ser alterado por este menu.")
                 con.execute(update(profiles).where(profiles.c.id == int(user_id)).values(
-                    nome=nome, usuario=usuario, perfil=perfil, ativo=ativo, updated_at=now
+                    nome=nome, usuario=usuario, email=email, perfil=perfil, ativo=ativo, updated_at=now
                 ))
                 rid = int(user_id)
             else:
                 rid = int(con.execute(insert(profiles).values(
-                    nome=nome, usuario=usuario, perfil=perfil, ativo=ativo, created_at=now, updated_at=now
+                    nome=nome, usuario=usuario, email=email, perfil=perfil, ativo=ativo,
+                    is_system_admin=False, created_at=now, updated_at=now
                 ).returning(profiles.c.id)).scalar_one())
             row = con.execute(select(profiles).where(profiles.c.id == rid)).first()
         d = dict(row._mapping)
         d["ativo"] = 1 if d.get("ativo") else 0
+        d.pop("is_system_admin", None)
         for k in ("created_at", "updated_at"):
             if isinstance(d.get(k), datetime): d[k] = d[k].isoformat(timespec="seconds")
         return d
     except IntegrityError as exc:
-        raise ValueError("Já existe um usuário com esse login.") from exc
+        raise ValueError("Já existe um usuário com esse login ou e-mail.") from exc
 
 
 def delete_app_user(user_id: int) -> bool:
     ensure_db()
     with engine.begin() as con:
+        row = con.execute(select(profiles.c.is_system_admin).where(profiles.c.id == int(user_id))).first()
+        if row and bool(row[0]):
+            raise ValueError("O administrador principal não pode ser excluído.")
         result = con.execute(delete(profiles).where(profiles.c.id == int(user_id)))
     return bool(result.rowcount)
+
+
+def bootstrap_admin_info() -> dict:
+    ensure_db()
+    with engine.connect() as con:
+        row = con.execute(select(profiles.c.id, profiles.c.email, profiles.c.usuario, profiles.c.perfil, profiles.c.ativo)
+                          .where(profiles.c.is_system_admin.is_(True)).limit(1)).first()
+    if not row:
+        return {"configured": False}
+    d = dict(row._mapping)
+    return {"configured": True, "perfil": d.get("perfil"), "ativo": bool(d.get("ativo")), "login_mode": "EMAIL_SUPABASE_AUTH"}
+
+
+def catalog_counts() -> dict:
+    ensure_db()
+    with engine.connect() as con:
+        return {
+            "modelos": int(con.execute(text("SELECT count(*) FROM public.catalog_models")).scalar_one()),
+            "observacoes": int(con.execute(text("SELECT count(*) FROM public.catalog_observations")).scalar_one()),
+            "pessoas": int(con.execute(text("SELECT count(*) FROM public.catalog_people")).scalar_one()),
+            "fabricantes": int(con.execute(text("SELECT count(DISTINCT fabricante) FROM public.catalog_models WHERE btrim(coalesce(fabricante,'')) <> ''")).scalar_one()),
+        }
 
 
 def get_app_setting(key: str, default=None):

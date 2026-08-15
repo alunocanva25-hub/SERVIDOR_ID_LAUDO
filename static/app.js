@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.0.0.22';
+const VERSION = 'V1.0.0.23';
 const LIMITS = {
   'A (2%)': {ativa:4.00, reativa:4.00},
   'B (1%)': {ativa:1.30, reativa:2.60},
@@ -221,13 +221,13 @@ async function loadAppConfig(){
 function renderConfigUsers(){
   const box=$('configUsersList');if(!box)return;box.innerHTML='';
   if(!appConfig.users.length){box.innerHTML='<div class="configEmpty">Nenhum usuário cadastrado.</div>';return;}
-  appConfig.users.forEach(u=>{const row=document.createElement('div');row.className='configUserRow';row.innerHTML=`<div><b>${esc(u.nome)}</b><span>${esc(u.usuario)}</span></div><span class="roleBadge ${u.perfil==='ADMIN'?'admin':''}">${esc(u.perfil)}</span><div class="configUserActions"><button class="secondary" type="button">EDITAR</button><button class="danger" type="button">EXCLUIR</button></div>`;const bs=row.querySelectorAll('button');bs[0].onclick=()=>editConfigUser(u.id);bs[1].onclick=()=>confirmBox('Excluir usuário',`Excluir ${u.nome}?`,()=>deleteConfigUser(u.id));box.appendChild(row);});
+  appConfig.users.forEach(u=>{const row=document.createElement('div');row.className='configUserRow';row.innerHTML=`<div><b>${esc(u.nome)}</b><span>${esc(u.usuario)}${u.email?' • '+esc(u.email):''}</span></div><span class="roleBadge ${u.perfil==='ADMIN'?'admin':''}">${esc(u.perfil)}</span><div class="configUserActions"><button class="secondary" type="button">EDITAR</button><button class="danger" type="button">EXCLUIR</button></div>`;const bs=row.querySelectorAll('button');bs[0].onclick=()=>editConfigUser(u.id);bs[1].onclick=()=>confirmBox('Excluir usuário',`Excluir ${u.nome}?`,()=>deleteConfigUser(u.id));box.appendChild(row);});
 }
-function editConfigUser(id){const u=appConfig.users.find(x=>Number(x.id)===Number(id));if(!u)return;editingConfigUserId=u.id;setVal('cfgUserName',u.nome);setVal('cfgUserLogin',u.usuario);setVal('cfgUserRole',u.perfil);const b=document.querySelector('.cfgAddUser');if(b)b.textContent='SALVAR';}
-function resetConfigUserForm(){editingConfigUserId=null;setVal('cfgUserName','');setVal('cfgUserLogin','');setVal('cfgUserRole','OPERADOR');const b=document.querySelector('.cfgAddUser');if(b)b.textContent='ADICIONAR';}
+function editConfigUser(id){const u=appConfig.users.find(x=>Number(x.id)===Number(id));if(!u)return;editingConfigUserId=u.id;setVal('cfgUserName',u.nome);setVal('cfgUserLogin',u.usuario);setVal('cfgUserEmail',u.email||'');setVal('cfgUserRole',u.perfil);const b=document.querySelector('.cfgAddUser');if(b)b.textContent='SALVAR';}
+function resetConfigUserForm(){editingConfigUserId=null;setVal('cfgUserName','');setVal('cfgUserLogin','');setVal('cfgUserEmail','');setVal('cfgUserRole','OPERADOR');const b=document.querySelector('.cfgAddUser');if(b)b.textContent='ADICIONAR';}
 async function saveConfigUser(){
-  const nome=val('cfgUserName'),usuario=val('cfgUserLogin'),perfil=val('cfgUserRole')||'OPERADOR';if(!nome||!usuario){modal('Usuários','Preencha Nome e Usuário.');return;}
-  try{await api('/api/config/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:editingConfigUserId,data:{nome,usuario,perfil,ativo:true}})});resetConfigUserForm();await refreshSettingsData();toast('Usuário salvo.');}catch(e){modal('Usuários',e.message)}
+  const nome=val('cfgUserName'),usuario=val('cfgUserLogin'),email=val('cfgUserEmail'),perfil=val('cfgUserRole')||'OPERADOR';if(!nome||!usuario){modal('Usuários','Preencha Nome e Usuário.');return;}
+  try{await api('/api/config/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:editingConfigUserId,data:{nome,usuario,email,perfil,ativo:true}})});resetConfigUserForm();await refreshSettingsData();toast('Usuário salvo.');}catch(e){modal('Usuários',e.message)}
 }
 async function deleteConfigUser(id){try{await api(`/api/config/users/${id}`,{method:'DELETE'});await refreshSettingsData();toast('Usuário excluído.');}catch(e){modal('Usuários',e.message)}}
 window.addEventListener('beforeinstallprompt',e=>{
