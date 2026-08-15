@@ -1,0 +1,19 @@
+ID LAUDO — SERVIDOR V1.0.0.36
+
+OBJETIVO
+- Suporte ao novo perfil FUNCAO.
+- Login central usado também pelo ID CAMPS LAUDOS desktop.
+- Distribuição de PDFs entre ADMIN/OPERADOR e FUNCAO.
+- Status do fluxo do Painel: AGUARDANDO_BAIXA, BAIXADO e CORRECAO_PDF.
+- Auditoria central de ações por usuário/data/hora.
+- Mantém o fluxo do APK V1.0.0.35 e o FCM já configurado.
+
+DEPLOY
+1. Substitua os arquivos do repositório Render pelos desta versão.
+2. Mantenha TODAS as variáveis atuais do Render/Supabase/Firebase.
+3. Faça o deploy.
+4. Verifique /api/health -> version 1.0.0.36 e push FCM_ATIVO.
+
+IMPORTANTE
+- Não é necessário gerar novo APK nesta etapa.
+- As novas tabelas PostgreSQL são criadas automaticamente na primeira inicialização.

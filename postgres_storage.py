@@ -9,14 +9,14 @@ import sqlite3
 import uuid
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Integer, JSON, MetaData, String, Table, Text, Uuid,
+    Boolean, Column, DateTime, Integer, JSON, LargeBinary, MetaData, String, Table, Text, Uuid,
     create_engine, delete, desc, insert, select, update, text
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.35"
+APP_VERSION = "1.0.0.36"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -24,6 +24,9 @@ STATUS_AGUARDANDO = "AGUARDANDO_REVISAO"
 STATUS_REVISAO = "EM_REVISAO"
 STATUS_DEVOLVIDO = "DEVOLVIDO"
 STATUS_CRIADO = "LAUDO_CRIADO"
+STATUS_AGUARDANDO_BAIXA = "AGUARDANDO_BAIXA"
+STATUS_BAIXADO = "BAIXADO"
+STATUS_CORRECAO_PDF = "CORRECAO_PDF"
 VALID_STATUSES = {
     STATUS_RASCUNHO, STATUS_PRONTO, STATUS_AGUARDANDO,
     STATUS_REVISAO, STATUS_DEVOLVIDO, STATUS_CRIADO,
@@ -118,6 +121,46 @@ push_devices = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+# V1.0.0.36 — fluxo do Painel de Laudos entre OPERADOR/ADMIN e FUNCAO.
+panel_assignments = Table(
+    "panel_assignments", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("document_uid", String(64), nullable=False, unique=True),
+    Column("source_record_id", Integer, nullable=True),
+    Column("source_local_id", Integer, nullable=True),
+    Column("numero_laudo", String(100), nullable=False, default=""),
+    Column("numero_serie", String(120), nullable=False, default=""),
+    Column("filename", String(260), nullable=False, default=""),
+    Column("pdf_data", LargeBinary, nullable=False),
+    Column("pdf_size", Integer, nullable=False, default=0),
+    Column("pdf_sha256", String(64), nullable=False, default=""),
+    Column("status", String(40), nullable=False, default=STATUS_AGUARDANDO_BAIXA),
+    Column("assigned_to_profile_id", Integer, nullable=False),
+    Column("assigned_by_profile_id", Integer, nullable=False),
+    Column("owner_profile_id", Integer, nullable=True),
+    Column("correction_message", Text, nullable=False, default=""),
+    Column("metadata_json", JSON, nullable=False, default=dict),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("sent_at", DateTime(timezone=True), nullable=True),
+    Column("downloaded_at", DateTime(timezone=True), nullable=True),
+)
+
+audit_events = Table(
+    "audit_events", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("profile_id", Integer, nullable=True),
+    Column("user_name", String(180), nullable=False, default=""),
+    Column("user_email", String(320), nullable=False, default=""),
+    Column("user_role", String(40), nullable=False, default=""),
+    Column("action", String(100), nullable=False),
+    Column("entity_type", String(80), nullable=False, default=""),
+    Column("entity_id", String(100), nullable=False, default=""),
+    Column("numero_laudo", String(100), nullable=False, default=""),
+    Column("details_json", JSON, nullable=False, default=dict),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
 catalog_models = Table(
     "catalog_models", metadata,
     Column("id", Integer, primary_key=True),
@@ -177,6 +220,10 @@ def _ensure_online_migrations() -> None:
         con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS suspended_at timestamptz"))
         con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS last_login_at timestamptz"))
         con.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_profiles_email_ci ON public.profiles (lower(email)) WHERE email IS NOT NULL AND btrim(email) <> ''"))
+        con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_target_status ON public.panel_assignments (assigned_to_profile_id,status)"))
+        con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_owner ON public.panel_assignments (owner_profile_id)"))
+        con.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_events_created ON public.audit_events (created_at DESC)"))
+        con.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_events_profile ON public.audit_events (profile_id,created_at DESC)"))
 
 
 def _ensure_bootstrap_admin() -> None:
@@ -534,7 +581,7 @@ def save_app_user(data: dict, user_id: int | None = None) -> dict:
         raise ValueError("Este usuário é reservado ao administrador principal.")
     if email and email == BOOTSTRAP_ADMIN_EMAIL:
         raise ValueError("Este e-mail é reservado ao administrador principal.")
-    if perfil not in {"ADMIN", "OPERADOR"}:
+    if perfil not in {"ADMIN", "OPERADOR", "FUNCAO"}:
         perfil = "OPERADOR"
     now = now_dt()
     try:
@@ -723,3 +770,142 @@ def backend_info() -> dict:
     host = "PostgreSQL"
     if "supabase" in url.lower(): host = "Supabase PostgreSQL"
     return {"mode": "ONLINE", "database": host, "persistent": True, "auth": "ATIVO" if str(os.environ.get("ID_LAUDO_AUTH_ENABLED") or "").strip().lower() in {"1","true","yes","sim","on"} else "PREPARADO", "notifications": True}
+
+
+# ---------------------------------------------------------------------------
+# V1.0.0.36 — Painel: distribuição, baixa e auditoria centralizada.
+# ---------------------------------------------------------------------------
+def list_panel_users(*, active_only: bool = True, roles: list[str] | None = None) -> list[dict]:
+    ensure_db()
+    stmt = select(profiles).order_by(profiles.c.nome, profiles.c.id)
+    if active_only:
+        stmt = stmt.where(profiles.c.ativo.is_(True))
+    if roles:
+        role_values = [str(v or '').strip().upper() for v in roles if str(v or '').strip()]
+        if role_values:
+            stmt = stmt.where(profiles.c.perfil.in_(role_values))
+    with engine.connect() as con:
+        rows = con.execute(stmt).all()
+    out=[]
+    for r in rows:
+        d=dict(r._mapping)
+        d['ativo']=1 if d.get('ativo') else 0
+        d.pop('is_system_admin', None)
+        d.pop('must_change_password', None)
+        for k in ('created_at','updated_at','suspended_at','last_login_at'):
+            if isinstance(d.get(k), datetime): d[k]=d[k].isoformat(timespec='seconds')
+        out.append(d)
+    return out
+
+def _assignment_public(d: dict, *, include_pdf: bool = False) -> dict:
+    out=dict(d or {})
+    if not include_pdf:
+        out.pop('pdf_data', None)
+    for k in ('created_at','updated_at','sent_at','downloaded_at'):
+        if isinstance(out.get(k), datetime): out[k]=out[k].isoformat(timespec='seconds')
+    return out
+
+def create_panel_assignment(*, pdf_bytes: bytes, filename: str, numero_laudo: str, numero_serie: str,
+                            assigned_to_profile_id: int, assigned_by_profile_id: int, owner_profile_id: int | None = None,
+                            source_record_id: int | None = None, source_local_id: int | None = None,
+                            metadata_json: dict | None = None, document_uid: str = '') -> dict:
+    import hashlib
+    ensure_db()
+    data=bytes(pdf_bytes or b'')
+    if not data or not data.startswith(b'%PDF'):
+        raise ValueError('O arquivo enviado não é um PDF válido.')
+    sha=hashlib.sha256(data).hexdigest()
+    uid=str(document_uid or '').strip() or sha[:32] + '-' + uuid.uuid4().hex[:12]
+    now=now_dt()
+    values=dict(
+        document_uid=uid, source_record_id=int(source_record_id) if source_record_id else None,
+        source_local_id=int(source_local_id) if source_local_id else None,
+        numero_laudo=str(numero_laudo or '').strip(), numero_serie=str(numero_serie or '').strip(),
+        filename=str(filename or 'LAUDO.pdf').strip()[:260], pdf_data=data, pdf_size=len(data), pdf_sha256=sha,
+        status=STATUS_AGUARDANDO_BAIXA, assigned_to_profile_id=int(assigned_to_profile_id),
+        assigned_by_profile_id=int(assigned_by_profile_id), owner_profile_id=int(owner_profile_id or assigned_by_profile_id),
+        correction_message='', metadata_json=dict(metadata_json or {}), updated_at=now, sent_at=now, downloaded_at=None,
+    )
+    with engine.begin() as con:
+        existing=con.execute(select(panel_assignments).where(panel_assignments.c.document_uid==uid)).first()
+        if existing:
+            con.execute(update(panel_assignments).where(panel_assignments.c.id==int(existing._mapping['id'])).values(**values))
+            rid=int(existing._mapping['id'])
+        else:
+            rid=int(con.execute(insert(panel_assignments).values(created_at=now, **values).returning(panel_assignments.c.id)).scalar_one())
+        row=con.execute(select(panel_assignments).where(panel_assignments.c.id==rid)).first()
+    return _assignment_public(dict(row._mapping))
+
+def get_panel_assignment(assignment_id: int) -> dict | None:
+    ensure_db()
+    with engine.connect() as con:
+        row=con.execute(select(panel_assignments).where(panel_assignments.c.id==int(assignment_id))).first()
+    return _assignment_public(dict(row._mapping), include_pdf=True) if row else None
+
+def list_panel_assignments(*, profile_id: int, role: str, limit: int = 500) -> list[dict]:
+    ensure_db()
+    role=str(role or '').strip().upper()
+    stmt=select(panel_assignments).order_by(desc(panel_assignments.c.updated_at)).limit(max(1,min(2000,int(limit or 500))))
+    if role=='FUNCAO':
+        stmt=stmt.where(panel_assignments.c.assigned_to_profile_id==int(profile_id))
+    elif role=='OPERADOR':
+        stmt=stmt.where((panel_assignments.c.assigned_to_profile_id==int(profile_id)) | (panel_assignments.c.owner_profile_id==int(profile_id)) | (panel_assignments.c.assigned_by_profile_id==int(profile_id)))
+    with engine.connect() as con:
+        rows=con.execute(stmt).all()
+        user_rows=con.execute(select(profiles.c.id,profiles.c.nome,profiles.c.email,profiles.c.perfil)).all()
+    users={int(r[0]): {'id':int(r[0]),'nome':r[1] or '', 'email':r[2] or '', 'perfil':r[3] or ''} for r in user_rows}
+    out=[]
+    for r in rows:
+        d=_assignment_public(dict(r._mapping))
+        d['assigned_to']=users.get(int(d.get('assigned_to_profile_id') or 0),{})
+        d['assigned_by']=users.get(int(d.get('assigned_by_profile_id') or 0),{})
+        d['owner']=users.get(int(d.get('owner_profile_id') or 0),{})
+        out.append(d)
+    return out
+
+def update_panel_assignment(assignment_id: int, *, status: str | None = None, assigned_to_profile_id: int | None = None,
+                            correction_message: str | None = None, pdf_bytes: bytes | None = None, filename: str | None = None,
+                            assigned_by_profile_id: int | None = None) -> dict | None:
+    import hashlib
+    ensure_db(); now=now_dt(); values={'updated_at':now}
+    if status is not None: values['status']=str(status or '').strip().upper()
+    if assigned_to_profile_id is not None: values['assigned_to_profile_id']=int(assigned_to_profile_id)
+    if assigned_by_profile_id is not None: values['assigned_by_profile_id']=int(assigned_by_profile_id)
+    if correction_message is not None: values['correction_message']=str(correction_message or '').strip()
+    if values.get('status')==STATUS_BAIXADO: values['downloaded_at']=now
+    if values.get('status')==STATUS_AGUARDANDO_BAIXA: values['sent_at']=now; values['downloaded_at']=None
+    if pdf_bytes is not None:
+        data=bytes(pdf_bytes or b'')
+        if not data.startswith(b'%PDF'): raise ValueError('O arquivo enviado não é um PDF válido.')
+        values.update(pdf_data=data,pdf_size=len(data),pdf_sha256=hashlib.sha256(data).hexdigest())
+    if filename is not None: values['filename']=str(filename or 'LAUDO.pdf').strip()[:260]
+    with engine.begin() as con:
+        result=con.execute(update(panel_assignments).where(panel_assignments.c.id==int(assignment_id)).values(**values))
+        if not result.rowcount: return None
+        row=con.execute(select(panel_assignments).where(panel_assignments.c.id==int(assignment_id))).first()
+    return _assignment_public(dict(row._mapping)) if row else None
+
+def add_audit_event(profile: dict | None, action: str, *, entity_type: str = '', entity_id: object = '', numero_laudo: str = '', details: dict | None = None) -> dict:
+    ensure_db(); p=dict(profile or {}); now=now_dt()
+    values=dict(
+        profile_id=int(p['id']) if p.get('id') else None, user_name=str(p.get('nome') or p.get('usuario') or ''),
+        user_email=str(p.get('email') or ''), user_role=str(p.get('perfil') or ''), action=str(action or '').strip().upper(),
+        entity_type=str(entity_type or '').strip().upper(), entity_id=str(entity_id or ''), numero_laudo=str(numero_laudo or '').strip(),
+        details_json=dict(details or {}), created_at=now,
+    )
+    with engine.begin() as con:
+        rid=int(con.execute(insert(audit_events).values(**values).returning(audit_events.c.id)).scalar_one())
+    return {'id':rid, **values, 'created_at':now.isoformat(timespec='seconds')}
+
+def list_audit_events(*, limit: int = 500, profile_id: int | None = None, action: str = '', numero_laudo: str = '') -> list[dict]:
+    ensure_db(); stmt=select(audit_events).order_by(desc(audit_events.c.created_at)).limit(max(1,min(5000,int(limit or 500))))
+    if profile_id: stmt=stmt.where(audit_events.c.profile_id==int(profile_id))
+    if str(action or '').strip(): stmt=stmt.where(audit_events.c.action.ilike(f"%{str(action).strip()}%"))
+    if str(numero_laudo or '').strip(): stmt=stmt.where(audit_events.c.numero_laudo.ilike(f"%{str(numero_laudo).strip()}%"))
+    with engine.connect() as con: rows=con.execute(stmt).all()
+    out=[]
+    for r in rows:
+        d=dict(r._mapping)
+        if isinstance(d.get('created_at'),datetime): d['created_at']=d['created_at'].isoformat(timespec='seconds')
+        out.append(d)
+    return out

@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.35"
+APP_VERSION = "1.0.0.36"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -17,6 +17,9 @@ STATUS_AGUARDANDO = "AGUARDANDO_REVISAO"
 STATUS_REVISAO = "EM_REVISAO"
 STATUS_DEVOLVIDO = "DEVOLVIDO"
 STATUS_CRIADO = "LAUDO_CRIADO"
+STATUS_AGUARDANDO_BAIXA = "AGUARDANDO_BAIXA"
+STATUS_BAIXADO = "BAIXADO"
+STATUS_CORRECAO_PDF = "CORRECAO_PDF"
 VALID_STATUSES = {
     STATUS_RASCUNHO, STATUS_PRONTO, STATUS_AGUARDANDO,
     STATUS_REVISAO, STATUS_DEVOLVIDO, STATUS_CRIADO,
@@ -316,7 +319,7 @@ def save_app_user(data: dict, user_id: int | None = None) -> dict:
         raise ValueError("Este usuário é reservado ao administrador principal.")
     if email and email == BOOTSTRAP_ADMIN_EMAIL:
         raise ValueError("Este e-mail é reservado ao administrador principal.")
-    if perfil not in {"ADMIN", "OPERADOR"}:
+    if perfil not in {"ADMIN", "OPERADOR", "FUNCAO"}:
         perfil = "OPERADOR"
     now = now_iso()
     try:
@@ -433,3 +436,23 @@ def export_bridge(data: dict, record_id: int | None = None, created_by_profile_i
         status_message="Modo local: arquivo preparado somente neste computador. Use o servidor ONLINE para enviar ao PostgreSQL.",
     )
     return {"record": saved, "path": str(target), "filename": target.name, "bridge_id": bridge_id}
+
+
+# V1.0.0.36 — stubs do fluxo central quando o servidor estiver em modo SQLite local.
+def list_panel_users(*, active_only=True, roles=None):
+    rows = list_app_users()
+    if active_only: rows = [r for r in rows if bool(r.get("ativo"))]
+    if roles:
+        allowed={str(v).upper() for v in roles}
+        rows=[r for r in rows if str(r.get("perfil") or "").upper() in allowed]
+    return rows
+
+def create_panel_assignment(**kwargs):
+    raise ValueError("Distribuição de laudos exige o backend PostgreSQL online.")
+
+def get_panel_assignment(assignment_id): return None
+def list_panel_assignments(*, profile_id, role, limit=500): return []
+def update_panel_assignment(assignment_id, **kwargs): return None
+def add_audit_event(profile, action, **kwargs):
+    return {"id":0,"action":str(action or ""),"created_at":now_iso() if "now_iso" in globals() else datetime.now().isoformat(timespec="seconds")}
+def list_audit_events(*, limit=500, profile_id=None, action="", numero_laudo=""): return []

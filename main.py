@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import base64
 import json
 import os
 import sqlite3
@@ -9,7 +10,7 @@ import subprocess
 import sys
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from storage_backend import (
@@ -20,6 +21,8 @@ from storage_backend import (
     list_notifications, backend_info, bootstrap_admin_info, get_app_user, bind_auth_profile,
     mark_password_changed, set_app_user_active, require_password_change_by_email,
     archive_notification, register_push_device, unregister_push_devices, list_push_tokens_for_record,
+    list_panel_users, create_panel_assignment, get_panel_assignment, list_panel_assignments, update_panel_assignment,
+    add_audit_event, list_audit_events, STATUS_AGUARDANDO_BAIXA, STATUS_BAIXADO, STATUS_CORRECAO_PDF,
 )
 import auth_service
 import push_service
@@ -107,6 +110,21 @@ def _require_admin(request: Request) -> dict:
     if clean(profile.get("perfil")).upper() != "ADMIN":
         raise HTTPException(403, "Acesso permitido somente para ADMIN.")
     return profile
+
+
+def _require_roles(request: Request, *roles: str) -> dict:
+    profile = getattr(request.state, "profile", None) or {}
+    allowed = {clean(r).upper() for r in roles if clean(r)}
+    if clean(profile.get("perfil")).upper() not in allowed:
+        raise HTTPException(403, "Seu perfil não possui permissão para esta ação.")
+    return profile
+
+
+def _audit(request: Request, action: str, *, entity_type: str = "", entity_id: object = "", numero_laudo: str = "", details: dict | None = None):
+    try:
+        return add_audit_event(getattr(request.state, "profile", None) or {}, action, entity_type=entity_type, entity_id=entity_id, numero_laudo=numero_laudo, details=details or {})
+    except Exception:
+        return None
 
 
 def _record_scope(request: Request) -> tuple[int | None, bool]:
@@ -305,6 +323,10 @@ def auth_login(payload: dict = Body(...)):
         if exc.status_code in {400, 401}:
             message = "E-mail ou senha inválidos."
         raise HTTPException(exc.status_code, message)
+    try:
+        add_audit_event(profile, "LOGIN", entity_type="SESSAO", details={"client": clean(payload.get("client")) or "ID LAUDO"})
+    except Exception:
+        pass
     return {
         "ok": True,
         "session": {
@@ -392,11 +414,13 @@ def auth_change_password(request: Request, payload: dict = Body(...)):
                 pass
     except auth_service.AuthServiceError as exc:
         raise HTTPException(exc.status_code, str(exc))
+    _audit(request, "ALTEROU_SENHA", entity_type="CONTA")
     return {"ok": True}
 
 
 @app.post("/api/auth/logout")
 def auth_logout(request: Request):
+    _audit(request, "LOGOUT", entity_type="SESSAO")
     try:
         auth_service.sign_out(getattr(request.state, "access_token", ""))
     except auth_service.AuthServiceError:
@@ -416,6 +440,9 @@ def statuses():
             {"id": STATUS_REVISAO, "label": "Em revisão"},
             {"id": STATUS_DEVOLVIDO, "label": "Devolvido para correção"},
             {"id": STATUS_CRIADO, "label": "Laudo criado"},
+            {"id": STATUS_AGUARDANDO_BAIXA, "label": "Aguardando baixa", "scope": "PAINEL"},
+            {"id": STATUS_BAIXADO, "label": "Baixado", "scope": "PAINEL"},
+            {"id": STATUS_CORRECAO_PDF, "label": "Correção de PDF", "scope": "PAINEL"},
         ],
     }
 
@@ -517,7 +544,13 @@ def config_get(request: Request):
         "backend": _runtime_backend_info(),
         "primary_admin": bootstrap_admin_info() if is_admin else {"configured": True},
         "current_user": _profile_public(profile),
-        "permissions": {"admin": is_admin},
+        "permissions": {
+            "admin": is_admin,
+            "database": is_admin,
+            "audit": is_admin,
+            "operate": clean(profile.get("perfil")).upper() in {"ADMIN", "OPERADOR"},
+            "function": clean(profile.get("perfil")).upper() == "FUNCAO",
+        },
     }
 
 
@@ -571,6 +604,7 @@ def config_user_save(request: Request, payload: dict = Body(...)):
         raise HTTPException(400, str(exc))
     except auth_service.AuthServiceError as exc:
         raise HTTPException(exc.status_code, str(exc))
+    _audit(request, "EDITOU_USUARIO" if user_id else "CRIOU_USUARIO", entity_type="USUARIO", entity_id=item.get("id") or user_id or "", details={"nome": item.get("nome"), "email": item.get("email"), "perfil": item.get("perfil")})
     return {"ok": True, "item": item, "reset_sent": reset_sent}
 
 
@@ -590,6 +624,7 @@ def config_user_suspend(user_id: int, request: Request, payload: dict = Body(...
         raise HTTPException(400, str(exc))
     except auth_service.AuthServiceError as exc:
         raise HTTPException(exc.status_code, str(exc))
+    _audit(request, "SUSPENDEU_USUARIO" if suspended else "REATIVOU_USUARIO", entity_type="USUARIO", entity_id=user_id, details={"nome": row.get("nome"), "email": row.get("email")})
     return {"ok": True, "item": item}
 
 
@@ -606,6 +641,7 @@ def config_user_reset_password(user_id: int, request: Request):
         auth_service.send_password_reset(email)
     except auth_service.AuthServiceError as exc:
         raise HTTPException(exc.status_code, str(exc))
+    _audit(request, "SOLICITOU_RESET_SENHA", entity_type="USUARIO", entity_id=user_id, details={"nome": row.get("nome"), "email": email})
     return {"ok": True, "message": "E-mail de redefinição solicitado."}
 
 
@@ -626,6 +662,7 @@ def config_user_delete(user_id: int, request: Request):
         raise HTTPException(exc.status_code, str(exc))
     if not deleted:
         raise HTTPException(404, "Usuário não encontrado.")
+    _audit(request, "EXCLUIU_USUARIO", entity_type="USUARIO", entity_id=user_id, details={"nome": row.get("nome"), "email": row.get("email"), "perfil": row.get("perfil")})
     return {"ok": True}
 
 
@@ -649,7 +686,7 @@ def record(record_id: int, request: Request):
 
 @app.post("/api/records/{record_id}/status")
 def record_status(record_id: int, request: Request, payload: dict = Body(...)):
-    _require_admin(request)
+    _require_roles(request, "ADMIN", "OPERADOR")
     status = clean(payload.get("status")).upper()
     message = clean(payload.get("message"))
     item = update_record_status(
@@ -662,6 +699,7 @@ def record_status(record_id: int, request: Request, payload: dict = Body(...)):
         raise HTTPException(404, "Espelho não encontrado.")
 
     push_result = {"attempted": 0, "sent": 0, "failed": 0, "configured": push_service.configured()}
+    _audit(request, "ALTEROU_STATUS_APP", entity_type="ESPELHO", entity_id=record_id, numero_laudo=str(item.get("numero_laudo") or ""), details={"status": status, "message": message})
     if status in {STATUS_DEVOLVIDO, STATUS_CRIADO}:
         try:
             tokens = list_push_tokens_for_record(record_id)
@@ -708,6 +746,180 @@ def export(request: Request, payload: dict = Body(...)):
     if payload.get("id") and not get_record(int(payload.get("id")), profile_id=profile_id, include_all=include_all):
         raise HTTPException(404, "Espelho não encontrado ou sem permissão para finalizar.")
     return {"ok": True, **export_bridge(data, record_id=payload.get("id"), created_by_profile_id=profile_id), "backend": _runtime_backend_info()}
+
+
+# ---------------------------------------------------------------------------
+# V1.0.0.36 — fluxo do PAINEL (ADMIN / OPERADOR / FUNCAO)
+# ---------------------------------------------------------------------------
+@app.get("/api/panel/app-record/{record_id}")
+def panel_app_record(record_id: int, request: Request):
+    _require_roles(request, "ADMIN", "OPERADOR")
+    item = get_record(record_id, include_all=True)
+    if not item:
+        raise HTTPException(404, "Espelho não encontrado.")
+    return {"ok": True, "item": item}
+
+
+@app.get("/api/panel/app-inbox")
+def panel_app_inbox(request: Request):
+    profile = _require_roles(request, "ADMIN", "OPERADOR")
+    records = list_records(limit=500, include_all=True)
+    notifications = [n for n in list_notifications(limit=500) if str(n.get("status") or "").upper() != "EXCLUIDA"]
+    return {"ok": True, "records": records, "notifications": notifications, "user": _profile_public(profile)}
+
+
+@app.get("/api/panel/users")
+def panel_users(request: Request, role: str = ""):
+    profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
+    role_u = clean(role).upper()
+    if role_u and role_u not in {"ADMIN", "OPERADOR", "FUNCAO"}:
+        raise HTTPException(400, "Perfil inválido.")
+    # OPERADOR normalmente envia para FUNCAO; FUNCAO devolve para OPERADOR/ADMIN.
+    roles = [role_u] if role_u else None
+    rows = list_panel_users(active_only=True, roles=roles)
+    return {"ok": True, "items": [_profile_public(r) for r in rows], "current_user": _profile_public(profile)}
+
+
+@app.get("/api/panel/inbox")
+def panel_inbox(request: Request, limit: int = 500):
+    profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
+    items = list_panel_assignments(profile_id=int(profile.get("id")), role=clean(profile.get("perfil")), limit=limit)
+    return {"ok": True, "items": items, "current_user": _profile_public(profile)}
+
+
+@app.post("/api/panel/send")
+def panel_send(request: Request, payload: dict = Body(...)):
+    profile = _require_roles(request, "ADMIN", "OPERADOR")
+    target_id = int(payload.get("target_profile_id") or 0)
+    target = next((u for u in list_panel_users(active_only=True) if int(u.get("id") or 0) == target_id), None)
+    if not target:
+        raise HTTPException(404, "Usuário de destino não encontrado.")
+    if clean(profile.get("perfil")).upper() == "OPERADOR" and clean(target.get("perfil")).upper() != "FUNCAO":
+        raise HTTPException(403, "OPERADOR pode enviar laudos apenas para usuários FUNCAO.")
+    docs = payload.get("documents") if isinstance(payload.get("documents"), list) else []
+    if not docs:
+        raise HTTPException(400, "Nenhum laudo foi enviado.")
+    saved=[]
+    for doc in docs[:100]:
+        if not isinstance(doc, dict):
+            continue
+        raw = clean(doc.get("pdf_base64"))
+        try:
+            pdf_bytes = base64.b64decode(raw, validate=True)
+        except Exception:
+            raise HTTPException(400, f"PDF inválido: {clean(doc.get('filename')) or 'arquivo'}")
+        try:
+            item = create_panel_assignment(
+                pdf_bytes=pdf_bytes,
+                filename=clean(doc.get("filename")) or "LAUDO.pdf",
+                numero_laudo=clean(doc.get("numero_laudo")),
+                numero_serie=clean(doc.get("numero_serie")),
+                assigned_to_profile_id=target_id,
+                assigned_by_profile_id=int(profile.get("id")),
+                owner_profile_id=int(profile.get("id")),
+                source_record_id=int(doc.get("source_record_id")) if str(doc.get("source_record_id") or "").isdigit() else None,
+                source_local_id=int(doc.get("source_local_id")) if str(doc.get("source_local_id") or "").isdigit() else None,
+                metadata_json=dict(doc.get("metadata") or {}),
+                document_uid=clean(doc.get("document_uid")),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        saved.append(item)
+        _audit(request, "ENVIOU_PARA_FUNCAO", entity_type="LAUDO_PAINEL", entity_id=item.get("id"), numero_laudo=item.get("numero_laudo") or "", details={"destino_id": target_id, "destino_nome": target.get("nome"), "arquivo": item.get("filename")})
+    return {"ok": True, "items": saved, "target": _profile_public(target)}
+
+
+def _can_access_assignment(profile: dict, item: dict) -> bool:
+    role = clean(profile.get("perfil")).upper()
+    pid = int(profile.get("id") or 0)
+    if role == "ADMIN":
+        return True
+    if role == "FUNCAO":
+        return int(item.get("assigned_to_profile_id") or 0) == pid
+    if role == "OPERADOR":
+        return pid in {int(item.get("assigned_to_profile_id") or 0), int(item.get("assigned_by_profile_id") or 0), int(item.get("owner_profile_id") or 0)}
+    return False
+
+
+@app.get("/api/panel/assignments/{assignment_id}/download")
+def panel_assignment_download(assignment_id: int, request: Request):
+    profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
+    item = get_panel_assignment(assignment_id)
+    if not item or not _can_access_assignment(profile, item):
+        raise HTTPException(404, "Laudo não encontrado para este usuário.")
+    data = item.get("pdf_data") or b""
+    if not data:
+        raise HTTPException(404, "PDF não disponível.")
+    filename = clean(item.get("filename")) or f"LAUDO_{assignment_id}.pdf"
+    safe = filename.replace('"','').replace('\r','').replace('\n','')
+    _audit(request, "BAIXOU_PDF", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=item.get("numero_laudo") or "", details={"arquivo": filename})
+    return Response(content=data, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{safe}"'})
+
+
+@app.post("/api/panel/assignments/{assignment_id}/downloaded")
+def panel_assignment_downloaded(assignment_id: int, request: Request):
+    profile = _require_roles(request, "ADMIN", "FUNCAO")
+    item = get_panel_assignment(assignment_id)
+    if not item or not _can_access_assignment(profile, item):
+        raise HTTPException(404, "Laudo não encontrado para este usuário.")
+    updated = update_panel_assignment(assignment_id, status=STATUS_BAIXADO)
+    _audit(request, "MARCOU_BAIXADO", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "")
+    return {"ok": True, "item": updated}
+
+
+@app.post("/api/panel/assignments/{assignment_id}/return")
+def panel_assignment_return(assignment_id: int, request: Request, payload: dict = Body(...)):
+    profile = _require_roles(request, "ADMIN", "FUNCAO")
+    item = get_panel_assignment(assignment_id)
+    if not item or not _can_access_assignment(profile, item):
+        raise HTTPException(404, "Laudo não encontrado para este usuário.")
+    reason = clean(payload.get("message"))
+    if not reason:
+        raise HTTPException(400, "Informe o motivo da correção.")
+    target_id = int(payload.get("target_profile_id") or item.get("owner_profile_id") or item.get("assigned_by_profile_id") or 0)
+    target = next((u for u in list_panel_users(active_only=True, roles=["ADMIN","OPERADOR"]) if int(u.get("id") or 0) == target_id), None)
+    if not target:
+        raise HTTPException(404, "OPERADOR/ADMIN de destino não encontrado.")
+    updated = update_panel_assignment(assignment_id, status=STATUS_CORRECAO_PDF, assigned_to_profile_id=target_id, correction_message=reason)
+    _audit(request, "DEVOLVEU_PARA_CORRECAO_PDF", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "", details={"motivo": reason, "destino_id": target_id, "destino_nome": target.get("nome")})
+    return {"ok": True, "item": updated, "target": _profile_public(target)}
+
+
+@app.post("/api/panel/assignments/{assignment_id}/resend")
+def panel_assignment_resend(assignment_id: int, request: Request, payload: dict = Body(...)):
+    profile = _require_roles(request, "ADMIN", "OPERADOR")
+    item = get_panel_assignment(assignment_id)
+    if not item or not _can_access_assignment(profile, item):
+        raise HTTPException(404, "Laudo não encontrado para este usuário.")
+    target_id = int(payload.get("target_profile_id") or 0)
+    target = next((u for u in list_panel_users(active_only=True, roles=["FUNCAO"]) if int(u.get("id") or 0) == target_id), None)
+    if not target:
+        raise HTTPException(404, "Usuário FUNCAO de destino não encontrado.")
+    pdf_bytes = None
+    raw = clean(payload.get("pdf_base64"))
+    if raw:
+        try: pdf_bytes = base64.b64decode(raw, validate=True)
+        except Exception: raise HTTPException(400, "PDF inválido.")
+    try:
+        updated = update_panel_assignment(assignment_id, status=STATUS_AGUARDANDO_BAIXA, assigned_to_profile_id=target_id, assigned_by_profile_id=int(profile.get("id")), correction_message="", pdf_bytes=pdf_bytes, filename=clean(payload.get("filename")) or None)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    _audit(request, "REENVIOU_PARA_FUNCAO", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "", details={"destino_id": target_id, "destino_nome": target.get("nome")})
+    return {"ok": True, "item": updated, "target": _profile_public(target)}
+
+
+@app.post("/api/audit/log")
+def audit_log(request: Request, payload: dict = Body(...)):
+    profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
+    event = add_audit_event(profile, clean(payload.get("action")) or "ACAO", entity_type=clean(payload.get("entity_type")), entity_id=payload.get("entity_id") or "", numero_laudo=clean(payload.get("numero_laudo")), details=dict(payload.get("details") or {}))
+    return {"ok": True, "item": event}
+
+
+@app.get("/api/audit")
+def audit_list(request: Request, limit: int = 500, profile_id: int = 0, action: str = "", numero_laudo: str = ""):
+    _require_admin(request)
+    items = list_audit_events(limit=limit, profile_id=profile_id or None, action=action, numero_laudo=numero_laudo)
+    return {"ok": True, "items": items, "users": [_profile_public(u) for u in list_panel_users(active_only=False)]}
 
 
 @app.post("/api/open-outbox")
