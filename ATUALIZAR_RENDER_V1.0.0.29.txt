@@ -1,0 +1,15 @@
+ID LAUDO - ATUALIZAR RENDER V1.0.0.29
+
+CORRECAO PRINCIPAL
+- Recuperacao de senha agora usa fluxo: E-mail -> Render HTTPS -> APK -> Criar nova senha.
+- Corrige o caso em que o link abria o ID LAUDO na tela inicial em vez da tela de nova senha.
+- O APK aceita tokens de recuperacao tanto no fragmento (#...) quanto na query (?...).
+
+SUPABASE > Authentication > URL Configuration
+Site URL:
+  https://SEU-SERVICO.onrender.com
+Redirect URLs:
+  idlaudo://password-reset
+
+No Render, ID_LAUDO_RESET_REDIRECT_URL pode ser removida. Se mantida, use apenas uma URL HTTPS do seu servico.
+Depois do deploy, solicite um NOVO e-mail em "Esqueceu sua senha?". Links antigos podem ter sido gerados com o fluxo anterior.

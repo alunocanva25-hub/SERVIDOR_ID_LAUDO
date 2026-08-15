@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.0.0.28';
+const VERSION = 'V1.0.0.29';
 const LIMITS = {
   'A (2%)': {ativa:4.00, reativa:4.00},
   'B (1%)': {ativa:1.30, reativa:2.60},
@@ -472,36 +472,39 @@ async function forgotPasswordSubmit(){
   const email=val('forgotEmail');if(!email){modal('Recuperar senha','Informe seu e-mail.');return;}
   try{const r=await publicApi('/api/auth/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});modal('Verifique seu e-mail',r.message||'Se o e-mail estiver cadastrado, enviaremos as instruções.');closeForgotPassword();}catch(e){modal('Recuperar senha',e.message)}
 }
-function parseRecoverySession(){
+function recoveryParams(){
   const rawHash=location.hash&&location.hash.startsWith('#')?location.hash.slice(1):'';
-  const hash=rawHash?new URLSearchParams(rawHash):null;
-  const query=new URLSearchParams(location.search||'');
-  if(hash){
-    const err=hash.get('error_description')||hash.get('error')||'';
-    if(err){window.__idlaudoRecoveryError=decodeURIComponent(err.replace(/\+/g,' '));return false;}
-    const type=hash.get('type')||query.get('type')||'';
-    const access=hash.get('access_token')||'';const refresh=hash.get('refresh_token')||'';
-    if(type==='recovery'&&access){
-      authState={access_token:access,refresh_token:refresh};saveAuthState();
-      history.replaceState(null,'',location.pathname+'?password_recovery=1');passwordChangeMode='recovery';return true;
-    }
+  const rawQuery=location.search&&location.search.startsWith('?')?location.search.slice(1):'';
+  const hash=new URLSearchParams(rawHash);const query=new URLSearchParams(rawQuery);
+  const pick=(key)=>hash.get(key)||query.get(key)||'';
+  return {rawHash,rawQuery,hash,query,pick};
+}
+function parseRecoverySession(){
+  const {pick}=recoveryParams();
+  const err=pick('error_description')||pick('error');
+  if(err){window.__idlaudoRecoveryError=decodeURIComponent(String(err).replace(/\+/g,' '));return false;}
+  const type=pick('type');const access=pick('access_token');const refresh=pick('refresh_token');
+  if(type==='recovery'&&access){
+    authState={access_token:access,refresh_token:refresh};saveAuthState();
+    history.replaceState(null,'',location.pathname+'?password_recovery=1');passwordChangeMode='recovery';return true;
   }
   return false;
 }
 function recoveryDeepLinkFromBrowser(){
-  const raw=location.hash&&location.hash.startsWith('#')?location.hash.slice(1):'';
-  if(!raw)return false;
-  const p=new URLSearchParams(raw);
-  if((p.get('type')||'')!=='recovery'||!p.get('access_token'))return false;
+  const {rawHash,rawQuery,pick}=recoveryParams();
+  if((pick('type')||'')!=='recovery'||!pick('access_token'))return false;
   if(nativeBridge())return false;
   const ua=navigator.userAgent||'';if(!/Android/i.test(ua))return false;
-  const target='idlaudo://password-reset#'+raw;
+  const payload=rawHash?('#'+rawHash):(rawQuery?('?'+rawQuery):'');
+  if(!payload)return false;
+  const target='idlaudo://password-reset'+payload;
   try{location.href=target;return true;}catch{return false;}
 }
 function openRecoveryInApp(){
-  const raw=location.hash&&location.hash.startsWith('#')?location.hash.slice(1):'';
-  if(!raw){modal('Recuperar senha','O link não contém uma sessão de recuperação válida. Solicite um novo e-mail.');return;}
-  location.href='idlaudo://password-reset#'+raw;
+  const {rawHash,rawQuery,pick}=recoveryParams();
+  if((pick('type')||'')!=='recovery'||!pick('access_token')){modal('Recuperar senha','O link não contém uma sessão de recuperação válida. Solicite um novo e-mail.');return;}
+  const payload=rawHash?('#'+rawHash):(rawQuery?('?'+rawQuery):'');
+  location.href='idlaudo://password-reset'+payload;
 }
 function showChangePassword(mode='forced'){
   passwordChangeMode=mode;document.body.classList.remove('auth-booting');document.body.classList.add('auth-locked');
@@ -550,7 +553,8 @@ async function init(){
   authGateState='BOOT';
   await purgeLegacyUiCache();
   clearLegacyAuthState();
-  const recoveryRawHash=location.hash||'';
+  // V29: o e-mail chega primeiro ao Render; em Android a página encaminha a sessão ao APK.
+  // A mesma tela continua funcionando no navegador caso o deep link não abra.
   const triedDeepLink=recoveryDeepLinkFromBrowser();
   let recovery=parseRecoverySession();
   try{authConfig=await publicApi('/api/auth/config');}

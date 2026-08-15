@@ -96,10 +96,14 @@ def public_app_url() -> str:
 
 
 def reset_redirect_url() -> str:
+    # V1.0.0.29: recuperação passa primeiro pela URL HTTPS do Render.
+    # Isso evita que clientes de e-mail/navegadores consumam ou percam o fragmento
+    # de sessão ao tentar abrir diretamente um esquema customizado do Android.
+    # Depois, o JavaScript da página encaminha a sessão para idlaudo://password-reset.
     explicit = _clean(os.environ.get("ID_LAUDO_RESET_REDIRECT_URL"))
-    # V1.0.0.28: por padrão o Supabase devolve o reset diretamente ao APK.
-    # Para usar somente o navegador, defina ID_LAUDO_RESET_REDIRECT_URL com uma URL HTTPS.
-    return explicit or "idlaudo://password-reset"
+    if explicit.lower().startswith(("http://", "https://")):
+        return explicit.rstrip("/")
+    return public_app_url()
 
 
 def _headers(key: str, token: str = "") -> dict[str, str]:
