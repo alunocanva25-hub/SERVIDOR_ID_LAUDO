@@ -104,7 +104,7 @@ def _valid_public_app_url(value: str) -> str:
 
 
 def public_app_url() -> str:
-    # V1.0.0.30: em produção, o próprio Render informa a URL pública correta.
+    # V1.0.0.31: em produção, o próprio Render informa a URL pública correta.
     # Preferimos RENDER_EXTERNAL_URL para evitar que uma URL do dashboard seja
     # cadastrada por engano em ID_LAUDO_PUBLIC_URL.
     candidates = [
@@ -219,6 +219,26 @@ def send_password_reset(email: str) -> None:
         params={"redirect_to": reset_redirect_url()},
         json_data={"email": email},
     )
+
+
+def verify_recovery_token_hash(token_hash: str) -> dict:
+    """Troca o TokenHash do e-mail de recuperação por uma sessão Supabase.
+
+    V1.0.0.31: o e-mail aponta para /password-reset?token_hash=... em vez de
+    depender do fragmento gerado por ConfirmationURL. O hash só é consumido
+    quando o JavaScript da página faz este POST, evitando que um simples GET
+    do cliente de e-mail altere a senha ou autentique a sessão.
+    """
+    token_hash = _clean(token_hash)
+    if not token_hash:
+        raise AuthServiceError("Link de recuperação inválido. Solicite um novo e-mail.", 400)
+    data = _request(
+        "POST", "/auth/v1/verify", key=public_key(),
+        json_data={"token_hash": token_hash, "type": "recovery"},
+    )
+    if not isinstance(data, dict) or not _clean(data.get("access_token")):
+        raise AuthServiceError("Não foi possível validar o link de recuperação.", 400)
+    return data
 
 
 def _admin_request(method: str, path: str, *, json_data=None, params=None):

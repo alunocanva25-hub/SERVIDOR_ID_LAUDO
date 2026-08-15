@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.0.0.30';
+const VERSION = 'V1.0.0.31';
 const LIMITS = {
   'A (2%)': {ativa:4.00, reativa:4.00},
   'B (1%)': {ativa:1.30, reativa:2.60},
@@ -497,7 +497,8 @@ function clearRememberedRecoveryPayload(){
   window.__idlaudoRecoveryPayload='';
   try{sessionStorage.removeItem('idlaudo.recovery.payload');}catch{}
 }
-function parseRecoverySession(){
+async function parseRecoverySession(){
+  // Compatibilidade com o fluxo antigo: Supabase devolve access_token no fragmento.
   const payload=recoveryPayloadFromCurrentUrl();
   if(payload)rememberRecoveryPayload(payload);
   const {pick}=recoveryParams();
@@ -507,6 +508,35 @@ function parseRecoverySession(){
   if(type==='recovery'&&access){
     authState={access_token:access,refresh_token:refresh};saveAuthState();
     history.replaceState(null,'','/password-reset?password_recovery=1');passwordChangeMode='recovery';return true;
+  }
+
+  // V31: fluxo robusto por TokenHash. O link do e-mail chega em
+  // /password-reset?token_hash=...&type=recovery. Só aqui o hash é trocado
+  // por uma sessão, então a tela de NOVA SENHA abre antes de qualquer login.
+  const tokenHash=pick('token_hash');
+  if(type==='recovery'&&tokenHash){
+    try{
+      const r=await publicApi('/api/auth/recovery/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token_hash:tokenHash})});
+      const session=r.session||{};
+      if(!session.access_token)throw new Error('Sessão de recuperação não recebida.');
+      authState={access_token:session.access_token||'',refresh_token:session.refresh_token||''};saveAuthState();
+      const deep=new URLSearchParams({
+        access_token:authState.access_token,
+        refresh_token:authState.refresh_token,
+        token_type:session.token_type||'bearer',
+        type:'recovery'
+      });
+      if(session.expires_in)deep.set('expires_in',String(session.expires_in));
+      rememberRecoveryPayload('#'+deep.toString());
+      history.replaceState(null,'','/password-reset?password_recovery=1');
+      passwordChangeMode='recovery';
+      return true;
+    }catch(e){
+      clearAuthState();
+      window.__idlaudoRecoveryError=e?.message||'O link de redefinição expirou ou já foi utilizado.';
+      history.replaceState(null,'','/password-reset?recovery_error=1');
+      return false;
+    }
   }
   return false;
 }
@@ -574,7 +604,7 @@ async function init(){
   clearLegacyAuthState();
   // V30: o e-mail retorna para /password-reset no Render. A sessão é lida primeiro,
   // a tela de nova senha é preparada e só então tentamos abrir o APK no Android.
-  let recovery=parseRecoverySession();
+  let recovery=await parseRecoverySession();
   try{authConfig=await publicApi('/api/auth/config');}
   catch(e){showLoginView();showAuthError(`Não foi possível consultar o login. ${e.message}`);return;}
 
@@ -596,6 +626,11 @@ async function init(){
         if(!nativeBridge() && /Android/i.test(navigator.userAgent||'')) setTimeout(()=>tryOpenRecoveryInApp(),450);
       }
       catch(e){clearAuthState();clearRememberedRecoveryPayload();showLoginView();showAuthError(window.__idlaudoRecoveryError||'O link de redefinição expirou. Solicite um novo link.');}
+      return;
+    }
+    if(location.pathname==='/password-reset'){
+      showLoginView();
+      showAuthError(window.__idlaudoRecoveryError||'Este link de recuperação não possui uma validação válida. Solicite um novo e-mail em “Esqueceu sua senha?”.');
       return;
     }
     // V27: sessão anterior só pode ser reutilizada depois da biometria nativa.

@@ -115,7 +115,7 @@ def _record_scope(request: Request) -> tuple[int | None, bool]:
 
 PUBLIC_API_PATHS = {
     "/api/health", "/api/auth/config", "/api/auth/login", "/api/auth/refresh",
-    "/api/auth/forgot-password",
+    "/api/auth/forgot-password", "/api/auth/recovery/verify",
 }
 
 
@@ -280,6 +280,7 @@ def auth_config():
         **status,
         "admin_ready": bool(admin.get("auth_linked")) or bool(bootstrap_auth.get("ready")),
         "password_reset": bool(status.get("configured")),
+        "recovery_template_url": auth_service.public_app_url().rstrip("/") + "/password-reset?token_hash={{ .TokenHash }}&type=recovery",
         "initial_admin": {"configured": bool(admin.get("configured")), "perfil": "ADMIN"},
         "bootstrap_reason": bootstrap_auth.get("reason", "") if not bootstrap_auth.get("ready") else "",
         "emergency_reset": emergency_reset,
@@ -347,6 +348,26 @@ def auth_forgot_password(payload: dict = Body(...)):
         if exc.status_code >= 500:
             raise HTTPException(exc.status_code, str(exc))
     return {"ok": True, "message": "Se o e-mail estiver cadastrado, você receberá as instruções para redefinir a senha."}
+
+
+@app.post("/api/auth/recovery/verify")
+def auth_recovery_verify(payload: dict = Body(...)):
+    """Valida o TokenHash do e-mail e devolve uma sessão temporária de recuperação."""
+    token_hash = clean(payload.get("token_hash"))
+    try:
+        session = auth_service.verify_recovery_token_hash(token_hash)
+    except auth_service.AuthServiceError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+    return {
+        "ok": True,
+        "session": {
+            "access_token": session.get("access_token"),
+            "refresh_token": session.get("refresh_token"),
+            "expires_in": session.get("expires_in"),
+            "expires_at": session.get("expires_at"),
+            "token_type": session.get("token_type") or "bearer",
+        },
+    }
 
 
 @app.post("/api/auth/change-password")

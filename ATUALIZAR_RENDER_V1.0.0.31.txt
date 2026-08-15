@@ -1,0 +1,34 @@
+ID LAUDO - ATUALIZAR RENDER V1.0.0.31
+
+CORRECAO DO RESET DE SENHA
+- O servidor usa automaticamente RENDER_EXTERNAL_URL, fornecida pelo próprio Render.
+- Links do dashboard.render.com nunca são usados como URL pública.
+- O reset volta para uma rota exclusiva: /password-reset.
+- No Android, essa rota tenta abrir o APK; se o deep link for bloqueado, a mesma tela de nova senha continua disponível no navegador.
+
+RENDER
+- ID_LAUDO_PUBLIC_URL pode ser removida: o Render já fornece RENDER_EXTERNAL_URL automaticamente.
+- ID_LAUDO_RESET_REDIRECT_URL também pode ser removida.
+
+SUPABASE > Authentication > URL Configuration
+Site URL:
+  https://SEU-SERVICO.onrender.com
+Redirect URLs (mantenha as duas):
+  https://SEU-SERVICO.onrender.com/password-reset
+  idlaudo://password-reset
+
+SUPABASE > Authentication > Email Templates > Reset Password
+O botão do e-mail deve usar:
+  {{ .ConfirmationURL }}
+Nao use um link para dashboard.render.com e nao use apenas {{ .SiteURL }} no botao de redefinicao.
+
+Depois do deploy abra /api/auth/config e confira que reset_redirect termina em /password-reset.
+Solicite um NOVO e-mail depois de salvar as configuracoes.
+
+
+V1.0.0.31 - RESET POR TOKEN HASH
+1. Atualize os arquivos no GitHub/Render.
+2. No Supabase > Authentication > Email Templates > Reset Password, use o template:
+   {{ .SiteURL }}/password-reset?token_hash={{ .TokenHash }}&type=recovery
+3. Solicite um NOVO e-mail de recuperacao. Links antigos nao usam o novo fluxo.
+4. O clique deve abrir CRIAR NOVA SENHA; no Android, o navegador tentara encaminhar para o APK.
