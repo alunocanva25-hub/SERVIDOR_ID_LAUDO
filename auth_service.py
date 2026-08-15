@@ -66,9 +66,12 @@ def secret_key() -> str:
 
 
 def auth_requested() -> bool:
-    # V1.0.0.25: quando o banco online está presente, o login passa a ser o modo esperado.
-    default = bool(_clean(os.environ.get("DATABASE_URL")))
-    return _flag("ID_LAUDO_AUTH_ENABLED", default=default)
+    # V1.0.0.26: em PostgreSQL/Render o login é obrigatório (fail-closed).
+    # Isso evita que uma variável antiga ID_LAUDO_AUTH_ENABLED=false, herdada das versões
+    # anteriores ao login, libere o aplicativo sem autenticação.
+    if bool(_clean(os.environ.get("DATABASE_URL"))):
+        return True
+    return _flag("ID_LAUDO_AUTH_ENABLED", default=False)
 
 
 def auth_configured() -> bool:

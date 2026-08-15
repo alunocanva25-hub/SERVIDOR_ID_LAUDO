@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.0.0.25';
+const VERSION = 'V1.0.0.26';
 const LIMITS = {
   'A (2%)': {ativa:4.00, reativa:4.00},
   'B (1%)': {ativa:1.30, reativa:2.60},
@@ -45,7 +45,9 @@ let authState = {access_token:'',refresh_token:''};
 let currentUser = null;
 let appStarted = false;
 let passwordChangeMode = 'forced';
-const AUTH_STORAGE_KEY = 'idlaudo.auth.v25';
+const AUTH_STORAGE_KEY = 'idlaudo.auth.v26';
+const LEGACY_AUTH_STORAGE_KEYS = ['idlaudo.auth.v25'];
+let authGateState = 'BOOT'; // BOOT | LOCKED | AUTHENTICATED | LOCAL_BYPASS
 
 function getUiMode(){ return 'APP'; }
 
@@ -352,10 +354,19 @@ async function publicApi(url, options={}){
 function saveAuthState(){
   try{localStorage.setItem(AUTH_STORAGE_KEY,JSON.stringify(authState||{}));}catch{}
 }
+function clearLegacyAuthState(){
+  try{LEGACY_AUTH_STORAGE_KEYS.forEach(k=>localStorage.removeItem(k));}catch{}
+}
 function loadAuthState(){
+  clearLegacyAuthState();
   try{const x=JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)||'{}');authState={access_token:x.access_token||'',refresh_token:x.refresh_token||''};}catch{authState={access_token:'',refresh_token:''};}
 }
-function clearAuthState(){authState={access_token:'',refresh_token:''};currentUser=null;try{localStorage.removeItem(AUTH_STORAGE_KEY);}catch{}}
+function clearAuthState(){authState={access_token:'',refresh_token:''};currentUser=null;try{localStorage.removeItem(AUTH_STORAGE_KEY);clearLegacyAuthState();}catch{}}
+async function purgeLegacyUiCache(){
+  // V26: evita WebView reutilizar HTML/JS da V24/V25 durante a ativação do login.
+  try{if('caches' in window){for(const key of await caches.keys()) await caches.delete(key);}}catch{}
+  try{if('serviceWorker' in navigator){for(const reg of await navigator.serviceWorker.getRegistrations()) await reg.unregister();}}catch{}
+}
 async function refreshAuthSession(){
   if(!authState.refresh_token)return false;
   try{
@@ -376,11 +387,19 @@ async function api(url, options={}){
 function togglePassword(id,btn){const el=$(id);if(!el)return;el.type=el.type==='password'?'text':'password';if(btn)btn.textContent=el.type==='password'?'◉':'○';}
 function showAuthError(text=''){const box=$('authError');if(!box)return;box.textContent=text;box.classList.toggle('hidden',!text);}
 function showLoginView(){
+  authGateState='LOCKED';
   document.body.classList.remove('auth-booting');document.body.classList.add('auth-locked');
   $('authView')?.classList.remove('hidden');$('forgotView')?.classList.add('hidden');$('resetPasswordView')?.classList.add('hidden');
   showAuthError('');setTimeout(()=>$('loginEmail')?.focus(),80);
 }
-function unlockApp(){document.body.classList.remove('auth-booting','auth-locked');$('authView')?.classList.add('hidden');$('forgotView')?.classList.add('hidden');$('resetPasswordView')?.classList.add('hidden');}
+function unlockApp(mode='AUTHENTICATED'){
+  // Falha fechada: servidor online com login solicitado só libera a interface com usuário validado.
+  if(authConfig?.requested && !currentUser) return false;
+  authGateState=mode;
+  document.body.classList.remove('auth-booting','auth-locked');
+  $('authView')?.classList.add('hidden');$('forgotView')?.classList.add('hidden');$('resetPasswordView')?.classList.add('hidden');
+  return true;
+}
 function openForgotPassword(){setVal('forgotEmail',val('loginEmail'));$('authView')?.classList.add('hidden');$('forgotView')?.classList.remove('hidden');setTimeout(()=>$('forgotEmail')?.focus(),80);}
 function closeForgotPassword(){$('forgotView')?.classList.add('hidden');$('authView')?.classList.remove('hidden');}
 async function forgotPasswordSubmit(){
@@ -422,12 +441,12 @@ async function loginSubmit(){
     const r=await publicApi('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
     authState={access_token:r.session?.access_token||'',refresh_token:r.session?.refresh_token||''};currentUser=r.user||null;saveAuthState();setVal('loginPassword','');
     if(currentUser?.must_change_password){showChangePassword('forced');return;}
-    unlockApp(); if(!appStarted)await startApp(); else {await loadAppConfig();await loadRecords();}
+    if(!unlockApp('AUTHENTICATED')){showLoginView();showAuthError('Não foi possível validar a sessão. Entre novamente.');return;} if(!appStarted)await startApp(); else {await loadAppConfig();await loadRecords();}
   }catch(e){showAuthError(e.message)}finally{if(btn){btn.disabled=false;btn.textContent='ENTRAR';}}
 }
 async function logoutApp(){
   try{if(authState.access_token)await api('/api/auth/logout',{method:'POST'});}catch{}
-  clearAuthState();document.body.classList.remove('settings-mode','editor-mode');showLoginView();
+  clearAuthState();authGateState='LOCKED';document.body.classList.remove('settings-mode','editor-mode');showLoginView();
 }
 async function enterWithStoredSession(){
   loadAuthState();if(!authState.access_token&&!authState.refresh_token)return false;
@@ -435,23 +454,40 @@ async function enterWithStoredSession(){
   try{const r=await api('/api/auth/me');currentUser=r.user||null;return !!currentUser;}catch{if(await refreshAuthSession()){try{const r=await api('/api/auth/me');currentUser=r.user||null;return !!currentUser;}catch{}}clearAuthState();return false;}
 }
 async function init(){
+  // V26: a tela de login é a barreira inicial. Nada do app é exibido antes da decisão de autenticação.
+  authGateState='BOOT';
+  await purgeLegacyUiCache();
+  clearLegacyAuthState();
   let recovery=parseRecoverySession();
-  try{authConfig=await publicApi('/api/auth/config');}catch(e){document.body.classList.remove('auth-booting');showLoginView();showAuthError(`Não foi possível consultar o login. ${e.message}`);return;}
-  if(authConfig.requested && !authConfig.configured){
-    showLoginView();const b=$('authSetupBox');if(b){b.classList.remove('hidden');b.textContent='Login aguardando configuração do Supabase Auth no Render. Informe as chaves SUPABASE_PUBLISHABLE_KEY e SUPABASE_SECRET_KEY.';}return;
-  }
-  if(!authConfig.requested){unlockApp();await startApp();return;}
-  if(authConfig.requested && authConfig.configured && (!authConfig.admin_api || !authConfig.admin_ready)){
-    const b=$('authSetupBox');if(b){b.classList.remove('hidden');b.textContent='Login ativo. Se o administrador inicial ainda não entrar, confira SUPABASE_SECRET_KEY e ID_LAUDO_BOOTSTRAP_ADMIN_PASSWORD no Render.';}
-  }
-  if(recovery){
-    try{const r=await api('/api/auth/me');currentUser=r.user||null;showChangePassword('recovery');}catch(e){clearAuthState();showLoginView();showAuthError('O link de redefinição expirou. Solicite um novo link.');}
+  try{authConfig=await publicApi('/api/auth/config');}
+  catch(e){showLoginView();showAuthError(`Não foi possível consultar o login. ${e.message}`);return;}
+
+  if(authConfig.requested){
+    // Em modo online, configuração incompleta nunca libera o aplicativo.
+    if(!authConfig.configured){
+      showLoginView();
+      const b=$('authSetupBox');if(b){b.classList.remove('hidden');b.textContent='Login obrigatório. O Supabase Auth ainda precisa ser concluído no Render.';}
+      return;
+    }
+    if(!authConfig.admin_api || !authConfig.admin_ready){
+      const b=$('authSetupBox');if(b){b.classList.remove('hidden');b.textContent='Login obrigatório. O administrador inicial ainda não está pronto; confira as variáveis do Supabase Auth no Render.';}
+    }
+    if(recovery){
+      try{const r=await api('/api/auth/me');currentUser=r.user||null;showChangePassword('recovery');}
+      catch(e){clearAuthState();showLoginView();showAuthError('O link de redefinição expirou. Solicite um novo link.');}
+      return;
+    }
+    // V26: ao abrir/recarregar o APK, exige autenticação explícita. A sessão web anterior
+    // não libera o aplicativo sozinha. Futuramente a biometria nativa fará esse desbloqueio.
+    clearAuthState();
+    showLoginView();
     return;
   }
-  const ok=await enterWithStoredSession();
-  if(!ok){showLoginView();return;}
-  if(currentUser?.must_change_password){showChangePassword('forced');return;}
-  unlockApp();await startApp();
+
+  // Bypass permitido apenas quando o servidor informa explicitamente que está em modo local/sem autenticação.
+  authGateState='LOCAL_BYPASS';
+  unlockApp('LOCAL_BYPASS');
+  await startApp();
 }
 
 async function startApp(){
@@ -465,7 +501,8 @@ async function startApp(){
     buildStepper(); indexFormStructure(); fillPeople(); fillManufacturers(); fillPortarias(); bindInputModes(); sanitizeNumericFields(); bindProcessToToi(); setDefaults(); updateBottomNav(); await loadAppConfig(); await loadRecords();
     appStarted=true;
   }catch(e){ modal('ID LAUDO',`Não foi possível carregar a base de cadastros.\n\n${e.message}`); }
-  if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+  // Online APK: não registra Service Worker; evita carregar interface antiga em cache.
+  purgeLegacyUiCache();
 }
 
 function buildStepper(){
