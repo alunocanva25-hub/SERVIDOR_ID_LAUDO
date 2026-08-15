@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.0.0.26';
+const VERSION = 'V1.0.0.27';
 const LIMITS = {
   'A (2%)': {ativa:4.00, reativa:4.00},
   'B (1%)': {ativa:1.30, reativa:2.60},
@@ -45,8 +45,8 @@ let authState = {access_token:'',refresh_token:''};
 let currentUser = null;
 let appStarted = false;
 let passwordChangeMode = 'forced';
-const AUTH_STORAGE_KEY = 'idlaudo.auth.v26';
-const LEGACY_AUTH_STORAGE_KEYS = ['idlaudo.auth.v25'];
+const AUTH_STORAGE_KEY = 'idlaudo.auth.v27';
+const LEGACY_AUTH_STORAGE_KEYS = ['idlaudo.auth.v26','idlaudo.auth.v25'];
 let authGateState = 'BOOT'; // BOOT | LOCKED | AUTHENTICATED | LOCAL_BYPASS
 
 function getUiMode(){ return 'APP'; }
@@ -232,6 +232,7 @@ function renderAccountInfo(){
   if($('cfgCurrentName')) $('cfgCurrentName').textContent=currentUser?.nome||currentUser?.usuario||'—';
   if($('cfgCurrentEmail')) $('cfgCurrentEmail').textContent=currentUser?.email||'—';
   if($('cfgCurrentRole')) $('cfgCurrentRole').textContent=currentUser?.perfil||'—';
+  renderNativeSecuritySettings();
 }
 function applySettingsPermissions(){
   const admin=String(currentUser?.perfil||'').toUpperCase()==='ADMIN' || !authConfig.requested;
@@ -351,6 +352,69 @@ async function publicApi(url, options={}){
   if(!r.ok) throw new Error(j.detail || j.message || 'Falha na operação.');
   return j;
 }
+function nativeBridge(){return window.IdLaudoNative||null;}
+function nativeSetAuthenticated(value){try{nativeBridge()?.setAuthenticated(!!value);}catch{}}
+function nativeBiometricAvailable(){try{return !!nativeBridge()?.isBiometricAvailable();}catch{return false;}}
+function nativeBiometricEnabled(){try{return !!nativeBridge()?.isBiometricEnabled();}catch{return false;}}
+function updateBiometricLoginButton(){
+  const btn=$('biometricLoginBtn');if(!btn)return;
+  const hasSession=!!(authState.access_token||authState.refresh_token);
+  btn.classList.toggle('hidden',!(nativeBiometricAvailable()&&nativeBiometricEnabled()&&hasSession));
+}
+function requestBiometricLogin(){
+  if(!nativeBiometricAvailable()){showAuthError('Biometria não disponível ou não cadastrada neste aparelho.');return;}
+  if(!nativeBiometricEnabled()){showAuthError('A biometria ainda não está ativada para esta conta.');return;}
+  showAuthError('');try{nativeBridge()?.requestBiometricLogin();}catch{showAuthError('Não foi possível abrir a biometria.');}
+}
+async function idLaudoBiometricUnlocked(){
+  showAuthError('');
+  const btn=$('biometricLoginBtn');if(btn){btn.disabled=true;btn.querySelector('span:last-child').textContent='VALIDANDO...';}
+  try{
+    const ok=await enterWithStoredSession();
+    if(!ok||!currentUser)throw new Error('Sua sessão expirou. Entre com e-mail e senha.');
+    if(currentUser?.must_change_password){showChangePassword('forced');return;}
+    if(!unlockApp('BIOMETRIC'))throw new Error('Não foi possível validar sua conta.');
+    if(!appStarted)await startApp();else{await loadAppConfig();await loadRecords();}
+  }catch(e){showLoginView();showAuthError(e.message||'Não foi possível entrar com biometria.');try{nativeBridge()?.disableBiometric();}catch{}}
+  finally{if(btn){btn.disabled=false;btn.querySelector('span:last-child').textContent='ENTRAR COM BIOMETRIA';}updateBiometricLoginButton();}
+}
+function idLaudoBiometricError(message='Não foi possível validar a biometria.'){
+  if(document.body.classList.contains('auth-locked'))showAuthError(message);else toast(message);
+}
+function idLaudoBiometricCanceled(){showAuthError('');}
+function idLaudoBiometricEnabled(){toast('Biometria ativada.');renderNativeSecuritySettings();updateBiometricLoginButton();}
+function idLaudoBiometricDisabled(){toast('Biometria desativada.');renderNativeSecuritySettings();updateBiometricLoginButton();}
+function enableBiometricSetting(){try{nativeBridge()?.enableBiometric();}catch{toast('Biometria disponível somente no APK Android.');}}
+function toggleBiometricSetting(){
+  if(!nativeBiometricAvailable()){modal('Biometria','Biometria não disponível ou não cadastrada neste aparelho.');return;}
+  if(nativeBiometricEnabled())confirmBox('Desativar biometria','Deseja voltar a exigir e-mail e senha ao abrir o aplicativo?',()=>{try{nativeBridge()?.disableBiometric();}catch{}});
+  else enableBiometricSetting();
+}
+function offerBiometricAfterLogin(){
+  if(!nativeBiometricAvailable()||nativeBiometricEnabled())return;
+  let asked=false;try{asked=localStorage.getItem('idlaudo.bio.offer.v27')==='1';}catch{}
+  if(asked)return;try{localStorage.setItem('idlaudo.bio.offer.v27','1');}catch{}
+  setTimeout(()=>modal('Ativar biometria','Quer usar a digital/biometria deste aparelho para entrar mais rápido nas próximas vezes? Sua senha não é armazenada para isso.',[
+    ['AGORA NÃO','secondary',closeModal],['ATIVAR','primary',()=>{closeModal();enableBiometricSetting();}]
+  ]),350);
+}
+function notificationPermissionState(){try{return String(nativeBridge()?.notificationPermissionState()||'SOMENTE APK');}catch{return 'SOMENTE APK';}}
+function requestNotificationPermission(){try{nativeBridge()?.requestNotificationPermission();}catch{modal('Notificações','A permissão de notificações está disponível no APK Android.');}}
+function idLaudoNotificationPermissionChanged(state){toast(state==='ATIVADA'?'Notificações ativadas.':'Notificações não foram autorizadas.');renderNativeSecuritySettings();}
+function renderNativeSecuritySettings(){
+  const bioStatus=$('cfgBiometricStatus'),bioAction=$('cfgBiometricAction'),notStatus=$('cfgNotificationStatus'),notAction=$('cfgNotificationAction');
+  if(bioStatus){const available=nativeBiometricAvailable(),enabled=nativeBiometricEnabled();bioStatus.textContent=!available?'INDISPONÍVEL':enabled?'ATIVADA':'DESATIVADA';bioStatus.className=enabled?'on':'off';}
+  if(bioAction){const available=nativeBiometricAvailable(),enabled=nativeBiometricEnabled();bioAction.disabled=!available;bioAction.textContent=enabled?'DESATIVAR':'ATIVAR';}
+  if(notStatus){const state=notificationPermissionState();notStatus.textContent=state;notStatus.className=state==='ATIVADA'?'on':'off';}
+  if(notAction){const state=notificationPermissionState();notAction.disabled=state==='ATIVADA'||state==='SOMENTE APK';notAction.textContent=state==='ATIVADA'?'ATIVADA':'ATIVAR';}
+}
+window.idLaudoBiometricUnlocked=idLaudoBiometricUnlocked;
+window.idLaudoBiometricError=idLaudoBiometricError;
+window.idLaudoBiometricCanceled=idLaudoBiometricCanceled;
+window.idLaudoBiometricEnabled=idLaudoBiometricEnabled;
+window.idLaudoBiometricDisabled=idLaudoBiometricDisabled;
+window.idLaudoNotificationPermissionChanged=idLaudoNotificationPermissionChanged;
+
 function saveAuthState(){
   try{localStorage.setItem(AUTH_STORAGE_KEY,JSON.stringify(authState||{}));}catch{}
 }
@@ -363,7 +427,7 @@ function loadAuthState(){
 }
 function clearAuthState(){authState={access_token:'',refresh_token:''};currentUser=null;try{localStorage.removeItem(AUTH_STORAGE_KEY);clearLegacyAuthState();}catch{}}
 async function purgeLegacyUiCache(){
-  // V26: evita WebView reutilizar HTML/JS da V24/V25 durante a ativação do login.
+  // V27: evita WebView reutilizar HTML/JS antigos durante login e biometria.
   try{if('caches' in window){for(const key of await caches.keys()) await caches.delete(key);}}catch{}
   try{if('serviceWorker' in navigator){for(const reg of await navigator.serviceWorker.getRegistrations()) await reg.unregister();}}catch{}
 }
@@ -388,14 +452,16 @@ function togglePassword(id,btn){const el=$(id);if(!el)return;el.type=el.type==='
 function showAuthError(text=''){const box=$('authError');if(!box)return;box.textContent=text;box.classList.toggle('hidden',!text);}
 function showLoginView(){
   authGateState='LOCKED';
+  nativeSetAuthenticated(false);
   document.body.classList.remove('auth-booting');document.body.classList.add('auth-locked');
   $('authView')?.classList.remove('hidden');$('forgotView')?.classList.add('hidden');$('resetPasswordView')?.classList.add('hidden');
-  showAuthError('');setTimeout(()=>$('loginEmail')?.focus(),80);
+  showAuthError('');try{if(!val('loginEmail'))setVal('loginEmail',localStorage.getItem('idlaudo.last.email')||'');}catch{}updateBiometricLoginButton();setTimeout(()=>$('loginEmail')?.focus(),80);
 }
 function unlockApp(mode='AUTHENTICATED'){
   // Falha fechada: servidor online com login solicitado só libera a interface com usuário validado.
   if(authConfig?.requested && !currentUser) return false;
   authGateState=mode;
+  nativeSetAuthenticated(true);
   document.body.classList.remove('auth-booting','auth-locked');
   $('authView')?.classList.add('hidden');$('forgotView')?.classList.add('hidden');$('resetPasswordView')?.classList.add('hidden');
   return true;
@@ -430,6 +496,7 @@ async function changePasswordSubmit(){
     if(currentUser)currentUser.must_change_password=false;
     const mode=passwordChangeMode;unlockApp();
     if(!appStarted)await startApp(); else {await loadAppConfig();renderAccountInfo();}
+    offerBiometricAfterLogin();
     modal('Senha atualizada','Sua nova senha foi salva com sucesso.');
     if(mode==='settings')setTimeout(()=>openSettings(),100);
   }catch(e){modal('Nova senha',e.message)}
@@ -439,14 +506,14 @@ async function loginSubmit(){
   const btn=$('loginBtn');if(btn){btn.disabled=true;btn.textContent='ENTRANDO...';}showAuthError('');
   try{
     const r=await publicApi('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
-    authState={access_token:r.session?.access_token||'',refresh_token:r.session?.refresh_token||''};currentUser=r.user||null;saveAuthState();setVal('loginPassword','');
+    authState={access_token:r.session?.access_token||'',refresh_token:r.session?.refresh_token||''};currentUser=r.user||null;saveAuthState();try{localStorage.setItem('idlaudo.last.email',email);}catch{}setVal('loginPassword','');
     if(currentUser?.must_change_password){showChangePassword('forced');return;}
-    if(!unlockApp('AUTHENTICATED')){showLoginView();showAuthError('Não foi possível validar a sessão. Entre novamente.');return;} if(!appStarted)await startApp(); else {await loadAppConfig();await loadRecords();}
+    if(!unlockApp('AUTHENTICATED')){showLoginView();showAuthError('Não foi possível validar a sessão. Entre novamente.');return;} if(!appStarted)await startApp(); else {await loadAppConfig();await loadRecords();} offerBiometricAfterLogin();
   }catch(e){showAuthError(e.message)}finally{if(btn){btn.disabled=false;btn.textContent='ENTRAR';}}
 }
 async function logoutApp(){
   try{if(authState.access_token)await api('/api/auth/logout',{method:'POST'});}catch{}
-  clearAuthState();authGateState='LOCKED';document.body.classList.remove('settings-mode','editor-mode');showLoginView();
+  try{nativeBridge()?.clearBiometricOnLogout();}catch{}clearAuthState();authGateState='LOCKED';nativeSetAuthenticated(false);document.body.classList.remove('settings-mode','editor-mode');showLoginView();
 }
 async function enterWithStoredSession(){
   loadAuthState();if(!authState.access_token&&!authState.refresh_token)return false;
@@ -454,7 +521,7 @@ async function enterWithStoredSession(){
   try{const r=await api('/api/auth/me');currentUser=r.user||null;return !!currentUser;}catch{if(await refreshAuthSession()){try{const r=await api('/api/auth/me');currentUser=r.user||null;return !!currentUser;}catch{}}clearAuthState();return false;}
 }
 async function init(){
-  // V26: a tela de login é a barreira inicial. Nada do app é exibido antes da decisão de autenticação.
+  // V27: a tela de login continua sendo a barreira inicial; a sessão anterior só é liberada pela biometria.
   authGateState='BOOT';
   await purgeLegacyUiCache();
   clearLegacyAuthState();
@@ -477,10 +544,16 @@ async function init(){
       catch(e){clearAuthState();showLoginView();showAuthError('O link de redefinição expirou. Solicite um novo link.');}
       return;
     }
-    // V26: ao abrir/recarregar o APK, exige autenticação explícita. A sessão web anterior
-    // não libera o aplicativo sozinha. Futuramente a biometria nativa fará esse desbloqueio.
-    clearAuthState();
+    // V27: sessão anterior só pode ser reutilizada depois da biometria nativa.
+    loadAuthState();
     showLoginView();
+    if(nativeBiometricEnabled() && (authState.access_token||authState.refresh_token)){
+      updateBiometricLoginButton();
+      setTimeout(()=>requestBiometricLogin(),320);
+    }else{
+      clearAuthState();
+      updateBiometricLoginButton();
+    }
     return;
   }
 
@@ -862,6 +935,12 @@ async function openRecord(id){
 async function deleteRecord(id){try{await api(`/api/records/${id}`,{method:'DELETE'});toast('Espelho excluído.');loadRecords()}catch(e){modal('Excluir espelho',e.message)}}
 async function openOutbox(){try{const r=await api('/api/open-outbox',{method:'POST'});toast(`Pasta aberta: ${r.path}`)}catch(e){modal('Pasta de envio',e.message)}}
 
+
+window.requestLogoutFromNative = function(){
+  if(!currentUser){showLoginView();return 'HANDLED';}
+  confirmBox('Sair da conta','Deseja encerrar sua sessão no ID LAUDO?',()=>logoutApp());
+  return 'HANDLED';
+};
 
 window.idLaudoBack = function(){
   const modalEl=$('modal');

@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0a3b62">
-  <title>ID LAUDO V1.0.0.26</title>
+  <title>ID LAUDO V1.0.0.27</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/assets/ID_LAUDO.png">
-  <link rel="stylesheet" href="/static/style.css?v=1.0.0.26">
+  <link rel="stylesheet" href="/static/style.css?v=1.0.0.27">
 </head>
 <body data-ui-mode="app" class="auth-booting">
 <section id="authView" class="authScreen">
@@ -18,6 +18,7 @@
       <div class="field"><label>E-mail</label><input id="loginEmail" type="email" inputmode="email" autocomplete="username" placeholder="seuemail@empresa.com"></div>
       <div class="field"><label>Senha</label><div class="passwordField"><input id="loginPassword" type="password" autocomplete="current-password" placeholder="••••••••"><button type="button" class="eyeBtn" onclick="togglePassword('loginPassword',this)" aria-label="Mostrar senha">◉</button></div></div>
       <button id="loginBtn" class="primary authPrimary" type="submit">ENTRAR</button>
+      <button id="biometricLoginBtn" class="secondary authBiometric hidden" type="button" onclick="requestBiometricLogin()"><span class="bioMark">◎</span><span>ENTRAR COM BIOMETRIA</span></button>
       <button class="linkButton" type="button" onclick="openForgotPassword()">Esqueceu sua senha?</button>
     </form>
     <div id="authSetupBox" class="authSetup hidden"></div>
@@ -158,6 +159,10 @@
           <div><span>Usuário</span><b id="cfgCurrentName">—</b></div>
           <div><span>E-mail</span><b id="cfgCurrentEmail">—</b></div>
           <div><span>Perfil</span><b id="cfgCurrentRole">—</b></div>
+        </div>
+        <div class="nativeSecurityList">
+          <div class="nativeSecurityRow"><div><span class="nativeSecurityIcon">◎</span><div><b>Biometria</b><small>Digital/biometria para desbloquear a sessão</small></div></div><div class="nativeSecurityAction"><strong id="cfgBiometricStatus">VERIFICANDO</strong><button id="cfgBiometricAction" class="secondary miniAction" type="button" onclick="toggleBiometricSetting()">ATIVAR</button></div></div>
+          <div class="nativeSecurityRow"><div><span class="nativeSecurityIcon">♧</span><div><b>Notificações</b><small>Permissão Android preparada para avisos do ID LAUDO</small></div></div><div class="nativeSecurityAction"><strong id="cfgNotificationStatus">VERIFICANDO</strong><button id="cfgNotificationAction" class="secondary miniAction" type="button" onclick="requestNotificationPermission()">ATIVAR</button></div></div>
         </div>
         <div class="settingsServerActions accountActions">
           <button class="secondary" type="button" onclick="openChangePassword()">ALTERAR SENHA</button>
@@ -370,6 +375,6 @@
 
 <div id="toast" class="toast"></div>
 <div id="modal" class="modal hidden"><div class="modalBox"><h3 id="modalTitle">Aviso</h3><p id="modalText"></p><div id="modalActions" class="modalActions"></div></div></div>
-<script src="/static/app.js?v=1.0.0.26"></script>
+<script src="/static/app.js?v=1.0.0.27"></script>
 </body>
 </html>

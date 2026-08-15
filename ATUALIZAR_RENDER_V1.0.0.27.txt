@@ -1,0 +1,7 @@
+ID LAUDO V1.0.0.27 - RENDER + SUPABASE AUTH
+
+Atualize os arquivos deste diretório na raiz do repositório SERVIDOR_ID_LAUDO e faça Deploy latest commit no Render.
+
+Variáveis do Render permanecem as mesmas da V1.0.0.26.
+Esta versão adiciona a interface web para biometria Android, permissão de notificações e ajustes visuais.
+O push em segundo plano (FCM) será conectado em etapa posterior; a V27 já prepara e testa a permissão Android.
