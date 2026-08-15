@@ -4,10 +4,23 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0a3b62">
-  <title>ID LAUDO V1.0.0.33</title>
+  <title>ID LAUDO V1.0.0.34</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/assets/ID_LAUDO.png">
-  <link rel="stylesheet" href="/static/style.css?v=1.0.0.33">
+  <link rel="stylesheet" href="/static/style.css?v=1.0.0.34">
+  <script>
+    // V34: no link de recuperação, começa a baixar o Supabase JS já no <head>.
+    // Isso reduz a espera quando o retorno usa ?code= em vez de #access_token.
+    try {
+      const u = new URL(location.href);
+      if (u.pathname === '/password-reset' || u.searchParams.get('idlaudo_action') === 'reset-password') {
+        const p = document.createElement('link');
+        p.rel = 'modulepreload';
+        p.href = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+        document.head.appendChild(p);
+      }
+    } catch (_) {}
+  </script>
 </head>
 <body data-ui-mode="app" class="auth-booting">
 <section id="authView" class="authScreen">
@@ -22,6 +35,7 @@
       <button class="linkButton" type="button" onclick="openForgotPassword()">Esqueceu sua senha?</button>
     </form>
     <div id="authSetupBox" class="authSetup hidden"></div>
+    <div id="authSuccess" class="authSuccess hidden"></div>
     <div id="authError" class="authError hidden"></div>
   </div>
 </section>
@@ -32,7 +46,7 @@
     <div class="authIntro"><span class="eyebrow">RECUPERAR ACESSO</span><h2>Esqueceu sua senha?</h2><p>Informe seu e-mail. O ID LAUDO enviará um link para criar uma nova senha.</p></div>
     <form class="authForm" onsubmit="forgotPasswordSubmit();return false;">
       <div class="field"><label>E-mail</label><input id="forgotEmail" type="email" inputmode="email" autocomplete="email" placeholder="seuemail@empresa.com"></div>
-      <button class="primary authPrimary" type="submit">ENVIAR LINK</button>
+      <button id="forgotSendBtn" class="primary authPrimary" type="submit">ENVIAR LINK</button>
     </form>
   </div>
 </section>
@@ -43,7 +57,7 @@
     <form class="authForm" onsubmit="changePasswordSubmit();return false;">
       <div class="field"><label>Nova senha</label><div class="passwordField"><input id="newPassword" type="password" autocomplete="new-password"><button type="button" class="eyeBtn" onclick="togglePassword('newPassword',this)">◉</button></div></div>
       <div class="field"><label>Confirmar nova senha</label><div class="passwordField"><input id="newPasswordConfirm" type="password" autocomplete="new-password"><button type="button" class="eyeBtn" onclick="togglePassword('newPasswordConfirm',this)">◉</button></div></div>
-      <button class="primary authPrimary" type="submit">SALVAR NOVA SENHA</button>
+      <button id="resetPasswordSaveBtn" class="primary authPrimary" type="submit">SALVAR NOVA SENHA</button>
       <button id="openRecoveryAppBtn" class="secondary authPrimary hidden" type="button" onclick="openRecoveryInApp()">ABRIR NO APP</button>
     </form>
   </div>
@@ -376,6 +390,6 @@
 
 <div id="toast" class="toast"></div>
 <div id="modal" class="modal hidden"><div class="modalBox"><h3 id="modalTitle">Aviso</h3><p id="modalText"></p><div id="modalActions" class="modalActions"></div></div></div>
-<script src="/static/app.js?v=1.0.0.33"></script>
+<script src="/static/app.js?v=1.0.0.34"></script>
 </body>
 </html>

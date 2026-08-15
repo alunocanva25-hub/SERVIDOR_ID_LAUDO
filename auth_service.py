@@ -104,7 +104,7 @@ def _valid_public_app_url(value: str) -> str:
 
 
 def public_app_url() -> str:
-    # V1.0.0.33: em produção, o próprio Render informa a URL pública correta.
+    # V1.0.0.34: em produção, o próprio Render informa a URL pública correta.
     # Preferimos RENDER_EXTERNAL_URL para evitar que uma URL do dashboard seja
     # cadastrada por engano em ID_LAUDO_PUBLIC_URL.
     candidates = [

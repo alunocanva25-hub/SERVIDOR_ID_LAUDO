@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.0.0.33';
+const VERSION = 'V1.0.0.34';
 const LIMITS = {
   'A (2%)': {ativa:4.00, reativa:4.00},
   'B (1%)': {ativa:1.30, reativa:2.60},
@@ -450,6 +450,7 @@ async function api(url, options={}){
 }
 function togglePassword(id,btn){const el=$(id);if(!el)return;el.type=el.type==='password'?'text':'password';if(btn)btn.textContent=el.type==='password'?'◉':'○';}
 function showAuthError(text=''){const box=$('authError');if(!box)return;box.textContent=text;box.classList.toggle('hidden',!text);}
+function showAuthSuccess(text=''){const box=$('authSuccess');if(!box)return;box.textContent=text;box.classList.toggle('hidden',!text);}
 function showLoginView(){
   authGateState='LOCKED';
   nativeSetAuthenticated(false);
@@ -466,7 +467,7 @@ function unlockApp(mode='AUTHENTICATED'){
   $('authView')?.classList.add('hidden');$('forgotView')?.classList.add('hidden');$('resetPasswordView')?.classList.add('hidden');
   return true;
 }
-function openForgotPassword(){setVal('forgotEmail',val('loginEmail'));$('authView')?.classList.add('hidden');$('forgotView')?.classList.remove('hidden');setTimeout(()=>$('forgotEmail')?.focus(),80);}
+function openForgotPassword(){showAuthSuccess('');setVal('forgotEmail',val('loginEmail'));$('authView')?.classList.add('hidden');$('forgotView')?.classList.remove('hidden');setTimeout(()=>$('forgotEmail')?.focus(),80);}
 function closeForgotPassword(){$('forgotView')?.classList.add('hidden');$('authView')?.classList.remove('hidden');}
 function setRecoveryFormEnabled(enabled){
   const view=$('resetPasswordView');if(!view)return;
@@ -474,6 +475,12 @@ function setRecoveryFormEnabled(enabled){
     if(el.id==='openRecoveryAppBtn')return;
     el.disabled=!enabled;
   });
+}
+function setRecoveryValidationPending(pending){
+  const btn=$('resetPasswordSaveBtn');
+  if(!btn)return;
+  btn.disabled=!!pending;
+  btn.textContent=pending?'VALIDANDO LINK...':'SALVAR NOVA SENHA';
 }
 function showRecoveryPreparing(){
   passwordChangeMode='recovery';authGateState='LOCKED';nativeSetAuthenticated(false);
@@ -486,7 +493,15 @@ function showRecoveryPreparing(){
 }
 async function forgotPasswordSubmit(){
   const email=val('forgotEmail');if(!email){modal('Recuperar senha','Informe seu e-mail.');return;}
-  try{const r=await publicApi('/api/auth/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});modal('Verifique seu e-mail',r.message||'Se o e-mail estiver cadastrado, enviaremos as instruções.');closeForgotPassword();}catch(e){modal('Recuperar senha',e.message)}
+  const btn=$('forgotSendBtn');
+  if(btn){btn.disabled=true;btn.textContent='ENVIANDO...';}
+  try{
+    const r=await publicApi('/api/auth/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+    closeForgotPassword();
+    showAuthSuccess(`E-mail de recuperação enviado para ${email}. Confira sua caixa de entrada e também a pasta de spam.`);
+    modal('E-mail enviado',r.message||'Enviamos um link para redefinir sua senha. Confira sua caixa de entrada e também o spam.');
+  }catch(e){modal('Recuperar senha',e.message)}
+  finally{if(btn){btn.disabled=false;btn.textContent='ENVIAR LINK';}}
 }
 function recoveryParams(){
   const rawHash=location.hash&&location.hash.startsWith('#')?location.hash.slice(1):'';
@@ -543,7 +558,7 @@ async function initRecoverySupabase(){
           persistSession:true,
           autoRefreshToken:true,
           detectSessionInUrl:true,
-          storageKey:'idlaudo-password-recovery-v33'
+          storageKey:'idlaudo-password-recovery-v34'
         }
       });
       window.__idlaudoRecoverySupabase=client;
@@ -566,49 +581,81 @@ function parseLegacyRecoveryTokens(){
   }
   return null;
 }
+function applyLegacyRecoverySession(session){
+  if(!session?.access_token)return false;
+  authState={access_token:session.access_token,refresh_token:session.refresh_token||''};
+  saveAuthState();
+  rememberRecoveryPayload(recoveryPayloadFromSession(session));
+  passwordChangeMode='recovery';
+  return true;
+}
+async function validateFastRecoverySession(){
+  try{
+    const me=await api('/api/auth/me');
+    currentUser=me.user||null;
+    history.replaceState(null,'','/password-reset?password_recovery=1');
+    return !!currentUser;
+  }catch(e){
+    window.__idlaudoRecoveryError=e.message||'O link de recuperação é inválido ou expirou.';
+    clearAuthState();
+    setRecoveryFormEnabled(false);
+    if($('resetPasswordTitle'))$('resetPasswordTitle').textContent='Link inválido ou expirado';
+    if($('resetPasswordText'))$('resetPasswordText').textContent=window.__idlaudoRecoveryError;
+    return false;
+  }
+}
+async function waitForSupabaseRecoverySession(sb, timeoutMs=900){
+  try{
+    const {data,error}=await sb.auth.getSession();
+    if(!error&&data?.session?.user)return data.session;
+  }catch{}
+  return await new Promise(resolve=>{
+    let finished=false;
+    let subscription=null;
+    const finish=(session)=>{
+      if(finished)return;finished=true;
+      try{subscription?.unsubscribe?.();}catch{}
+      resolve(session||null);
+    };
+    try{
+      const sub=sb.auth.onAuthStateChange((_event,session)=>{if(session?.user)finish(session);});
+      subscription=sub?.data?.subscription||null;
+    }catch{}
+    setTimeout(async()=>{
+      if(finished)return;
+      try{const {data}=await sb.auth.getSession();finish(data?.session?.user?data.session:null);}catch{finish(null);}
+    },timeoutMs);
+  });
+}
 async function preparePasswordRecovery(){
   if(!isPasswordRecoveryUrl())return false;
   window.__idlaudoRecoveryError='';
 
-  // V33: caminho rápido. O link padrão do Supabase normalmente retorna a sessão
+  // V34: caminho rápido. O link padrão do Supabase normalmente retorna a sessão
   // no fragmento (#access_token=...&type=recovery). Validamos isso primeiro, sem
   // esperar carregar a biblioteca externa. Isso elimina a demora de vários segundos.
   const legacy=parseLegacyRecoveryTokens();
   if(legacy?.access_token){
-    authState={access_token:legacy.access_token,refresh_token:legacy.refresh_token||''};saveAuthState();
-    rememberRecoveryPayload(recoveryPayloadFromSession(legacy));
-    try{
-      const me=await api('/api/auth/me');currentUser=me.user||null;
-      history.replaceState(null,'','/password-reset?password_recovery=1');
-      passwordChangeMode='recovery';
-      return true;
-    }catch(e){
-      window.__idlaudoRecoveryError=e.message||'Usuário não autorizado no ID LAUDO.';
-      clearAuthState();
-      return false;
-    }
+    applyLegacyRecoverySession(legacy);
+    return await validateFastRecoverySession();
   }
 
   // Compatibilidade com retornos que usam ?code= ou sessão processada pela SDK.
   // O carregamento externo só acontece quando o caminho rápido acima não existe.
   const sb=await initRecoverySupabase();
   if(sb){
-    for(let attempt=0;attempt<12;attempt+=1){
-      try{
-        const {data,error}=await sb.auth.getSession();
-        if(!error&&data?.session?.user){
-          const session=data.session;
-          authState={access_token:session.access_token||'',refresh_token:session.refresh_token||''};
-          saveAuthState();rememberRecoveryPayload(recoveryPayloadFromSession(session));
-          try{const me=await api('/api/auth/me');currentUser=me.user||null;}
-          catch(e){window.__idlaudoRecoveryError=e.message||'Usuário não autorizado no ID LAUDO.';clearAuthState();return false;}
-          history.replaceState(null,'','/password-reset?password_recovery=1');
-          passwordChangeMode='recovery';
-          return true;
-        }
-      }catch(e){window.__idlaudoRecoveryError=e?.message||'';}
-      await new Promise(resolve=>setTimeout(resolve,100));
-    }
+    try{
+      const session=await waitForSupabaseRecoverySession(sb,900);
+      if(session?.user){
+        authState={access_token:session.access_token||'',refresh_token:session.refresh_token||''};
+        saveAuthState();rememberRecoveryPayload(recoveryPayloadFromSession(session));
+        try{const me=await api('/api/auth/me');currentUser=me.user||null;}
+        catch(e){window.__idlaudoRecoveryError=e.message||'Usuário não autorizado no ID LAUDO.';clearAuthState();return false;}
+        history.replaceState(null,'','/password-reset?password_recovery=1');
+        passwordChangeMode='recovery';
+        return true;
+      }
+    }catch(e){window.__idlaudoRecoveryError=e?.message||'';}
   }
 
   if(!window.__idlaudoRecoveryError){
@@ -639,10 +686,10 @@ function showChangePassword(mode='forced'){
   $('authView')?.classList.add('hidden');$('forgotView')?.classList.add('hidden');$('resetPasswordView')?.classList.remove('hidden');
   const forced=mode==='forced';$('resetPasswordTitle').textContent=forced?'Troque sua senha inicial':'Criar nova senha';
   $('resetPasswordText').textContent=forced?'Por segurança, a senha temporária só pode ser usada neste primeiro acesso.':'Use pelo menos 8 caracteres.';
-  // V33: não redireciona automaticamente para outro contexto/APK durante o reset.
+  // V34: não redireciona automaticamente para outro contexto/APK durante o reset.
   // A tela onde o link foi validado permanece estável até o usuário salvar a nova senha.
   $('openRecoveryAppBtn')?.classList.add('hidden');
-  setRecoveryFormEnabled(true);
+  setRecoveryFormEnabled(true);setRecoveryValidationPending(false);
   setVal('newPassword','');setVal('newPasswordConfirm','');setTimeout(()=>$('newPassword')?.focus(),80);
 }
 
@@ -670,6 +717,7 @@ async function changePasswordSubmit(){
   }catch(e){modal('Nova senha',e.message)}
 }
 async function loginSubmit(){
+  showAuthSuccess('');
   const email=val('loginEmail'),password=val('loginPassword');if(!email||!password){showAuthError('Informe e-mail e senha.');return;}
   const btn=$('loginBtn');if(btn){btn.disabled=true;btn.textContent='ENTRANDO...';}showAuthError('');
   try{
@@ -691,21 +739,43 @@ async function enterWithStoredSession(){
 async function init(){
   authGateState='BOOT';
   const recoveryRequested=isPasswordRecoveryUrl();
-  // V33: ao abrir um link de recuperação nunca mostramos a tela de login enquanto
-  // o token é validado. O usuário vê imediatamente o estado de recuperação.
-  if(recoveryRequested)showRecoveryPreparing();
-  await purgeLegacyUiCache();
+
+  // V34: se o Supabase já devolveu access_token no link, a tela de NOVA SENHA
+  // aparece imediatamente, antes de limpeza de cache e antes de consultar /api/auth/config.
+  // A validação continua em segundo plano enquanto o usuário já pode começar a digitar.
+  if(recoveryRequested){
+    const instant=parseLegacyRecoveryTokens();
+    if(instant?.access_token){
+      applyLegacyRecoverySession(instant);
+      showChangePassword('recovery');
+      if($('resetPasswordText'))$('resetPasswordText').textContent='Link reconhecido. Você já pode criar sua nova senha.';
+      clearLegacyAuthState();
+      Promise.resolve().then(()=>purgeLegacyUiCache()).catch(()=>{});
+      publicApi('/api/auth/config').then(c=>{authConfig=c||authConfig;}).catch(()=>{});
+      await validateFastRecoverySession();
+      return;
+    }
+    // Mesmo quando o retorno usa ?code=, mostramos a tela de NOVA SENHA imediatamente.
+    // Os campos ficam disponíveis para digitação enquanto o Supabase valida a sessão;
+    // somente o botão SALVAR aguarda a confirmação do link.
+    showChangePassword('recovery');
+    if($('resetPasswordText'))$('resetPasswordText').textContent='Validando seu link… Você já pode digitar a nova senha.';
+    setRecoveryValidationPending(true);
+    Promise.resolve().then(()=>purgeLegacyUiCache()).catch(()=>{});
+  }else{
+    await purgeLegacyUiCache();
+  }
   clearLegacyAuthState();
   try{authConfig=await publicApi('/api/auth/config');}
   catch(e){
-    if(recoveryRequested){showRecoveryPreparing();if($('resetPasswordText'))$('resetPasswordText').textContent=`Não foi possível validar o link. ${e.message}`;}
+    if(recoveryRequested){setRecoveryValidationPending(true);if($('resetPasswordText'))$('resetPasswordText').textContent=`Não foi possível validar o link. ${e.message}`;}
     else{showLoginView();showAuthError(`Não foi possível consultar o login. ${e.message}`);}
     return;
   }
 
   if(authConfig.requested){
     if(!authConfig.configured){
-      if(recoveryRequested){showRecoveryPreparing();if($('resetPasswordText'))$('resetPasswordText').textContent='O Supabase Auth ainda precisa ser concluído no Render.';}
+      if(recoveryRequested){setRecoveryValidationPending(true);if($('resetPasswordText'))$('resetPasswordText').textContent='O Supabase Auth ainda precisa ser concluído no Render.';}
       else{showLoginView();const b=$('authSetupBox');if(b){b.classList.remove('hidden');b.textContent='Login obrigatório. O Supabase Auth ainda precisa ser concluído no Render.';}}
       return;
     }
@@ -715,12 +785,12 @@ async function init(){
     if(recoveryRequested){
       const recovery=await preparePasswordRecovery();
       if(recovery){
-        showChangePassword('recovery');
-        // V33: sem salto automático para idlaudo://. Se o Android abriu o APK pelo
-        // App Link HTTPS, permanecemos nele; se abriu no navegador, permanecemos no
-        // navegador. Em ambos os casos a sessão válida fica na mesma tela até SALVAR.
+        setRecoveryValidationPending(false);
+        if($('resetPasswordTitle'))$('resetPasswordTitle').textContent='Criar nova senha';
+        if($('resetPasswordText'))$('resetPasswordText').textContent='Link validado. Digite e salve sua nova senha.';
+        // V34: sem salto automático para idlaudo:// e sem limpar o que o usuário já digitou.
       }else{
-        showRecoveryPreparing();setRecoveryFormEnabled(false);
+        setRecoveryFormEnabled(false);
         if($('resetPasswordTitle'))$('resetPasswordTitle').textContent='Link inválido ou expirado';
         if($('resetPasswordText'))$('resetPasswordText').textContent=window.__idlaudoRecoveryError||'Solicite um novo e-mail de recuperação.';
       }

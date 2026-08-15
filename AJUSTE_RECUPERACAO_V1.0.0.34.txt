@@ -1,0 +1,7 @@
+ID LAUDO V1.0.0.34 - AJUSTE DE RECUPERACAO DE SENHA
+
+1. A tela Criar nova senha abre imediatamente quando o link ja contem access_token.
+2. A validacao da sessao ocorre em segundo plano, sem bloquear a digitacao.
+3. Retornos ?code= usam modulepreload e evento do Supabase Auth para reduzir a espera.
+4. Ao solicitar recuperacao, o usuario recebe confirmacao visivel de que o e-mail foi enviado.
+5. Modais agora aparecem acima da tela de login/autenticacao.
