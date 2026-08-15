@@ -104,7 +104,7 @@ def _valid_public_app_url(value: str) -> str:
 
 
 def public_app_url() -> str:
-    # V1.0.0.31: em produção, o próprio Render informa a URL pública correta.
+    # V1.0.0.32: em produção, o próprio Render informa a URL pública correta.
     # Preferimos RENDER_EXTERNAL_URL para evitar que uma URL do dashboard seja
     # cadastrada por engano em ID_LAUDO_PUBLIC_URL.
     candidates = [
@@ -224,10 +224,9 @@ def send_password_reset(email: str) -> None:
 def verify_recovery_token_hash(token_hash: str) -> dict:
     """Troca o TokenHash do e-mail de recuperação por uma sessão Supabase.
 
-    V1.0.0.31: o e-mail aponta para /password-reset?token_hash=... em vez de
-    depender do fragmento gerado por ConfirmationURL. O hash só é consumido
-    quando o JavaScript da página faz este POST, evitando que um simples GET
-    do cliente de e-mail altere a senha ou autentique a sessão.
+    Compatibilidade legada da V31. A V32 nao depende de TokenHash nem de
+    template personalizado; o fluxo principal usa o retorno padrao do Supabase
+    e detectSessionInUrl=true no cliente.
     """
     token_hash = _clean(token_hash)
     if not token_hash:

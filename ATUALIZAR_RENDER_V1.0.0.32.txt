@@ -1,0 +1,18 @@
+ID LAUDO - ATUALIZAR RENDER V1.0.0.32
+
+1. Substitua os arquivos do repositorio do servidor pelos arquivos deste ZIP.
+2. Render: Root Directory continua em branco.
+3. Build Command: pip install -r requirements.txt
+4. Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
+5. Mantenha as variaveis Supabase/PostgreSQL ja funcionais.
+6. Supabase > Authentication > URL Configuration:
+   Site URL: https://id-laudo-api.onrender.com
+   Redirect URL: https://id-laudo-api.onrender.com/password-reset
+7. NAO e necessario alterar o template Reset Password.
+8. Depois do deploy, solicite um NOVO e-mail de recuperacao para testar.
+
+V1.0.0.32
+- Recuperacao de senha no padrao do MARKET: Supabase JS + detectSessionInUrl.
+- Compatibilidade com hash access_token antigo mantida.
+- Browser Android tenta abrir o APK depois de validar a sessao.
+- Se nao abrir o APK, a propria pagina web permite criar a nova senha.

@@ -280,7 +280,10 @@ def auth_config():
         **status,
         "admin_ready": bool(admin.get("auth_linked")) or bool(bootstrap_auth.get("ready")),
         "password_reset": bool(status.get("configured")),
-        "recovery_template_url": auth_service.public_app_url().rstrip("/") + "/password-reset?token_hash={{ .TokenHash }}&type=recovery",
+        # Publishable key e segura para o cliente. A V32 usa o Supabase JS apenas
+        # para processar a sessao temporaria do link padrao de recuperacao.
+        "supabase_publishable_key": auth_service.public_key() if status.get("configured") else "",
+        "recovery_redirect": auth_service.reset_redirect_url(),
         "initial_admin": {"configured": bool(admin.get("configured")), "perfil": "ADMIN"},
         "bootstrap_reason": bootstrap_auth.get("reason", "") if not bootstrap_auth.get("ready") else "",
         "emergency_reset": emergency_reset,
@@ -352,7 +355,7 @@ def auth_forgot_password(payload: dict = Body(...)):
 
 @app.post("/api/auth/recovery/verify")
 def auth_recovery_verify(payload: dict = Body(...)):
-    """Valida o TokenHash do e-mail e devolve uma sessão temporária de recuperação."""
+    """Compatibilidade legada V31 para links TokenHash ja emitidos."""
     token_hash = clean(payload.get("token_hash"))
     try:
         session = auth_service.verify_recovery_token_hash(token_hash)
