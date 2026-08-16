@@ -98,8 +98,29 @@ def _save_panel_visibility_config(value: dict) -> dict:
     return clean_value
 
 
-def _runtime_backend_info() -> dict:
-    info = dict(backend_info())
+def _runtime_backend_info(*, deep: bool = True) -> dict:
+    """Informações do backend sem transformar uma oscilação do banco em 502 global.
+
+    O Render usa /api/health como health-check. Até a V43 esse endpoint chamava
+    backend_info(), que abre conexão com o PostgreSQL e executa as migrações
+    idempotentes. Se Supabase/pooler demorasse ou uma migração estivesse
+    momentaneamente bloqueada, o health-check falhava e o Render podia ficar
+    sem instância saudável, fazendo inclusive a página inicial retornar 502.
+
+    Em modo raso (deep=False) reportamos a configuração conhecida sem tocar no
+    banco. As rotas de trabalho continuam validando o PostgreSQL normalmente.
+    """
+    if deep:
+        info = dict(backend_info())
+    else:
+        online = bool(clean(os.environ.get("DATABASE_URL")))
+        database = "Supabase PostgreSQL" if online else "SQLite"
+        info = {
+            "mode": "ONLINE" if online else "LOCAL",
+            "database": database,
+            "persistent": True,
+            "notifications": bool(online),
+        }
     ac = auth_service.config_status()
     if ac.get("requested"):
         info["auth"] = "ATIVO" if ac.get("enabled") else "CONFIGURAR"
@@ -280,8 +301,24 @@ def sw():
 
 @app.get("/api/health")
 def health():
-    info = _runtime_backend_info()
+    # Health-check do Render precisa ser extremamente leve e independente do DB.
+    info = _runtime_backend_info(deep=False)
     return {"ok": True, "app": APP_NAME, "version": APP_VERSION, "backend": info}
+
+
+@app.get("/api/health/deep")
+def health_deep():
+    """Diagnóstico opcional que testa PostgreSQL/migrações sem afetar o Render."""
+    try:
+        info = _runtime_backend_info(deep=True)
+        return {"ok": True, "app": APP_NAME, "version": APP_VERSION, "backend": info, "database_check": "OK"}
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "app": APP_NAME, "version": APP_VERSION,
+             "backend": _runtime_backend_info(deep=False),
+             "database_check": "ERRO", "detail": f"{type(exc).__name__}: {exc}"},
+            status_code=503,
+        )
 
 
 @app.get("/api/backend-info")
@@ -869,52 +906,21 @@ def _panel_role_key(value: object) -> str:
     return raw if raw in {"ADMIN", "OPERADOR", "FUNCAO"} else raw
 
 
-def _merge_panel_user_sources() -> list[dict]:
-    """Une as duas leituras de usuários para evitar lista vazia por migração.
-
-    A tela Configuração > Usuários usa list_app_users(), enquanto o fluxo
-    ENVIAR usava somente list_panel_users(). Em bancos migrados os dois caminhos
-    podem divergir por metadados antigos; por isso os destinos são montados a
-    partir da mesma fonte do cadastro e complementados pela leitura do painel.
-    """
-    merged: dict[int, dict] = {}
-    for source in (list_app_users(), list_panel_users(active_only=False)):
-        for row in source or []:
-            try:
-                rid = int(row.get("id") or 0)
-            except Exception:
-                continue
-            if not rid:
-                continue
-            item = dict(row)
-            item["perfil"] = _panel_role_key(item.get("perfil"))
-            # Ausência histórica de 'ativo' deve ser tratada como ativo.
-            if "ativo" not in item:
-                item["ativo"] = True
-            merged[rid] = {**merged.get(rid, {}), **item}
-    return list(merged.values())
-
-
 @app.get("/api/panel/send-targets")
 def panel_send_targets(request: Request):
-    """Retorna destinos reais do cadastro central, sempre atualizados."""
+    """Destinos ativos para o fluxo ENVIAR, usando uma única consulta central."""
     profile = _require_roles(request, "ADMIN", "OPERADOR")
     role = _panel_role_key(profile.get("perfil"))
     current_id = int(profile.get("id") or 0)
-    rows = _merge_panel_user_sources()
+    rows = list_panel_users(active_only=True, roles=["FUNCAO"] if role == "OPERADOR" else None)
     items = []
-    for row in rows:
+    for row in rows or []:
         rid = int(row.get("id") or 0)
         if not rid or rid == current_id:
             continue
-        if not bool(row.get("ativo", True)):
-            continue
-        target_role = _panel_role_key(row.get("perfil"))
-        # O destino operacional do fluxo de baixa é o perfil FUNCAO.
-        # ADMIN também enxerga OPERADOR/ADMIN para redistribuição, se necessário.
-        if role == "OPERADOR" and target_role != "FUNCAO":
-            continue
-        items.append(_profile_public({**row, "perfil": target_role}))
+        item = _profile_public(row)
+        item["perfil"] = _panel_role_key(item.get("perfil"))
+        items.append(item)
     items.sort(key=lambda u: (0 if _panel_role_key(u.get("perfil")) == "FUNCAO" else 1, clean(u.get("nome")).lower(), int(u.get("id") or 0)))
     return {
         "ok": True, "items": items, "count": len(items),

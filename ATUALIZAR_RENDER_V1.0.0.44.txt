@@ -1,0 +1,11 @@
+ID LAUDO SERVER V1.0.0.44 — HOTFIX 502 / HEALTH CHECK
+
+1. /api/health agora é raso: não abre PostgreSQL e não executa migração.
+   Isso impede uma oscilação do Supabase/pooler de derrubar a instância inteira no Render.
+2. Novo /api/health/deep testa o banco separadamente.
+3. /api/panel/send-targets foi simplificado para uma única consulta central.
+4. Novos status AGUARDANDO_BAIXA, BAIXADO e CORRECAO_PDF entram na normalização oficial.
+
+Após o deploy:
+- /api/health deve responder 200 imediatamente.
+- /api/health/deep deve retornar database_check=OK quando PostgreSQL estiver acessível.
