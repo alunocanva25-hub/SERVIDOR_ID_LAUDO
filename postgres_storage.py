@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.45"
+APP_VERSION = "1.0.0.46"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -144,6 +144,7 @@ panel_assignments = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     Column("sent_at", DateTime(timezone=True), nullable=True),
+    Column("received_at", DateTime(timezone=True), nullable=True),
     Column("downloaded_at", DateTime(timezone=True), nullable=True),
 )
 
@@ -242,6 +243,9 @@ def _ensure_online_migrations() -> None:
         """))
 
         con.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_profiles_email_ci ON public.profiles (lower(email)) WHERE email IS NOT NULL AND btrim(email) <> ''"))
+        # V46: separa o aceite da notificação da baixa final. O usuário FUNCAO
+        # primeiro RECEBE o laudo; somente após conferir o PDF ele confirma BAIXADO.
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS received_at timestamptz"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_target_status ON public.panel_assignments (assigned_to_profile_id,status)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_owner ON public.panel_assignments (owner_profile_id)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_events_created ON public.audit_events (created_at DESC)"))
@@ -962,7 +966,7 @@ def _assignment_public(d: dict, *, include_pdf: bool = False) -> dict:
     out=dict(d or {})
     if not include_pdf:
         out.pop('pdf_data', None)
-    for k in ('created_at','updated_at','sent_at','downloaded_at'):
+    for k in ('created_at','updated_at','sent_at','received_at','downloaded_at'):
         if isinstance(out.get(k), datetime): out[k]=out[k].isoformat(timespec='seconds')
     return out
 
@@ -985,7 +989,7 @@ def create_panel_assignment(*, pdf_bytes: bytes, filename: str, numero_laudo: st
         filename=str(filename or 'LAUDO.pdf').strip()[:260], pdf_data=data, pdf_size=len(data), pdf_sha256=sha,
         status=STATUS_AGUARDANDO_BAIXA, assigned_to_profile_id=int(assigned_to_profile_id),
         assigned_by_profile_id=int(assigned_by_profile_id), owner_profile_id=int(owner_profile_id or assigned_by_profile_id),
-        correction_message='', metadata_json=dict(metadata_json or {}), updated_at=now, sent_at=now, downloaded_at=None,
+        correction_message='', metadata_json=dict(metadata_json or {}), updated_at=now, sent_at=now, received_at=None, downloaded_at=None,
     )
     with engine.begin() as con:
         existing=con.execute(select(panel_assignments).where(panel_assignments.c.document_uid==uid)).first()
@@ -1026,15 +1030,17 @@ def list_panel_assignments(*, profile_id: int, role: str, limit: int = 500) -> l
 
 def update_panel_assignment(assignment_id: int, *, status: str | None = None, assigned_to_profile_id: int | None = None,
                             correction_message: str | None = None, pdf_bytes: bytes | None = None, filename: str | None = None,
-                            assigned_by_profile_id: int | None = None) -> dict | None:
+                            assigned_by_profile_id: int | None = None, mark_received: bool = False) -> dict | None:
     import hashlib
     ensure_db(); now=now_dt(); values={'updated_at':now}
     if status is not None: values['status']=str(status or '').strip().upper()
     if assigned_to_profile_id is not None: values['assigned_to_profile_id']=int(assigned_to_profile_id)
     if assigned_by_profile_id is not None: values['assigned_by_profile_id']=int(assigned_by_profile_id)
     if correction_message is not None: values['correction_message']=str(correction_message or '').strip()
+    if mark_received: values['received_at']=now
     if values.get('status')==STATUS_BAIXADO: values['downloaded_at']=now
-    if values.get('status')==STATUS_AGUARDANDO_BAIXA: values['sent_at']=now; values['downloaded_at']=None
+    if values.get('status')==STATUS_AGUARDANDO_BAIXA:
+        values['sent_at']=now; values['received_at']=None; values['downloaded_at']=None
     if pdf_bytes is not None:
         data=bytes(pdf_bytes or b'')
         if not data.startswith(b'%PDF'): raise ValueError('O arquivo enviado não é um PDF válido.')

@@ -990,6 +990,38 @@ def _can_access_assignment(profile: dict, item: dict) -> bool:
     return False
 
 
+@app.post("/api/panel/assignments/{assignment_id}/received")
+def panel_assignment_received(assignment_id: int, request: Request):
+    """Confirma apenas o recebimento da notificação. Não marca o laudo como BAIXADO."""
+    profile = _require_roles(request, "ADMIN", "FUNCAO")
+    item = get_panel_assignment(assignment_id)
+    if not item or not _can_access_assignment(profile, item):
+        raise HTTPException(404, "Laudo não encontrado para este usuário.")
+    if clean(item.get("status")).upper() != STATUS_AGUARDANDO_BAIXA:
+        return {"ok": True, "item": item}
+    updated = update_panel_assignment(assignment_id, mark_received=True)
+    _audit(request, "RECEBEU_LAUDO", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "")
+    return {"ok": True, "item": updated or item}
+
+
+@app.get("/api/panel/assignments/{assignment_id}/preview")
+def panel_assignment_preview(assignment_id: int, request: Request):
+    """Visualização inline do PDF para conferência antes da baixa."""
+    profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
+    item = get_panel_assignment(assignment_id)
+    if not item or not _can_access_assignment(profile, item):
+        raise HTTPException(404, "Laudo não encontrado para este usuário.")
+    if clean(profile.get("perfil")).upper() == "FUNCAO" and not item.get("received_at"):
+        raise HTTPException(400, "Confirme RECEBER na notificação antes de visualizar este laudo.")
+    data = item.get("pdf_data") or b""
+    if not data:
+        raise HTTPException(404, "PDF não disponível.")
+    filename = clean(item.get("filename")) or f"LAUDO_{assignment_id}.pdf"
+    safe = filename.replace('"','').replace('\r','').replace('\n','')
+    _audit(request, "VISUALIZOU_PDF", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=item.get("numero_laudo") or "", details={"arquivo": filename})
+    return Response(content=data, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="{safe}"'})
+
+
 @app.get("/api/panel/assignments/{assignment_id}/download")
 def panel_assignment_download(assignment_id: int, request: Request):
     profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
@@ -1011,8 +1043,12 @@ def panel_assignment_downloaded(assignment_id: int, request: Request):
     item = get_panel_assignment(assignment_id)
     if not item or not _can_access_assignment(profile, item):
         raise HTTPException(404, "Laudo não encontrado para este usuário.")
+    if clean(item.get("status")).upper() == STATUS_BAIXADO:
+        return {"ok": True, "item": item}
+    if clean(item.get("status")).upper() != STATUS_AGUARDANDO_BAIXA or not item.get("received_at"):
+        raise HTTPException(400, "Receba e confira o laudo antes de confirmar a baixa.")
     updated = update_panel_assignment(assignment_id, status=STATUS_BAIXADO)
-    _audit(request, "MARCOU_BAIXADO", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "")
+    _audit(request, "CONFIRMOU_BAIXA", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "")
     return {"ok": True, "item": updated}
 
 

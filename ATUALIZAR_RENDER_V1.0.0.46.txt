@@ -1,0 +1,11 @@
+ID LAUDO SERVER V1.0.0.46 — FLUXO FUNÇÃO: RECEBER > CONFERIR > BAIXADO
+
+ALTERAÇÕES
+- Notificação do perfil FUNÇÃO agora pode ser confirmada como RECEBIDA sem marcar BAIXADO.
+- Novo campo received_at em panel_assignments (migração automática).
+- Novo preview inline do PDF para conferência.
+- BAIXAR PDF não muda o status.
+- BAIXADO só é aplicado após confirmação explícita do usuário.
+- Auditoria registra RECEBEU_LAUDO, VISUALIZOU_PDF, BAIXOU_PDF e CONFIRMOU_BAIXA separadamente.
+
+Após publicar, confira /api/health e confirme version 1.0.0.46 e push FCM_ATIVO.
