@@ -1,0 +1,11 @@
+ID LAUDO - ATUALIZAR RENDER V1.0.0.37
+
+Esta versão mantém o fluxo V36 do painel e do Firebase.
+Ajuste desta versão: o ADMIN do ID LAUDO passa a poder criar/editar usuários com perfil FUNÇÃO pela interface do APP.
+
+Perfis disponíveis no cadastro:
+- ADMIN
+- OPERADOR
+- FUNÇÃO (valor interno FUNCAO)
+
+Depois do deploy, confirme /api/health com version 1.0.0.37 e push FCM_ATIVO.

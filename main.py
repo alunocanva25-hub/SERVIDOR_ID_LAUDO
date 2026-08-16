@@ -749,7 +749,7 @@ def export(request: Request, payload: dict = Body(...)):
 
 
 # ---------------------------------------------------------------------------
-# V1.0.0.36 — fluxo do PAINEL (ADMIN / OPERADOR / FUNCAO)
+# V1.0.0.37 — fluxo do PAINEL (ADMIN / OPERADOR / FUNCAO)
 # ---------------------------------------------------------------------------
 @app.get("/api/panel/app-record/{record_id}")
 def panel_app_record(record_id: int, request: Request):

@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.36"
+APP_VERSION = "1.0.0.37"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -438,7 +438,7 @@ def export_bridge(data: dict, record_id: int | None = None, created_by_profile_i
     return {"record": saved, "path": str(target), "filename": target.name, "bridge_id": bridge_id}
 
 
-# V1.0.0.36 — stubs do fluxo central quando o servidor estiver em modo SQLite local.
+# V1.0.0.37 — stubs do fluxo central quando o servidor estiver em modo SQLite local.
 def list_panel_users(*, active_only=True, roles=None):
     rows = list_app_users()
     if active_only: rows = [r for r in rows if bool(r.get("ativo"))]

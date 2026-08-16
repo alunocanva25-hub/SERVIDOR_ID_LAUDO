@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.0.0.35';
+const VERSION = 'V1.0.0.37';
+function roleLabel(role){const r=String(role||'').toUpperCase();return r==='FUNCAO'?'FUNÇÃO':r||'—';}
 const LIMITS = {
   'A (2%)': {ativa:4.00, reativa:4.00},
   'B (1%)': {ativa:1.30, reativa:2.60},
@@ -233,7 +234,7 @@ function renderBackendInfo(){
 function renderAccountInfo(){
   if($('cfgCurrentName')) $('cfgCurrentName').textContent=currentUser?.nome||currentUser?.usuario||'—';
   if($('cfgCurrentEmail')) $('cfgCurrentEmail').textContent=currentUser?.email||'—';
-  if($('cfgCurrentRole')) $('cfgCurrentRole').textContent=currentUser?.perfil||'—';
+  if($('cfgCurrentRole')) $('cfgCurrentRole').textContent=roleLabel(currentUser?.perfil);
   renderNativeSecuritySettings();
 }
 function applySettingsPermissions(){
@@ -254,7 +255,7 @@ function renderConfigUsers(){
   appConfig.users.forEach(u=>{
     const active=!!Number(u.ativo);
     const row=document.createElement('div');row.className=`configUserRow ${active?'':'userSuspended'}`;
-    row.innerHTML=`<div><b>${esc(u.nome)}</b><span>${esc(u.usuario)}${u.email?' • '+esc(u.email):''}</span><small>${active?'ATIVO':'SUSPENSO'}</small></div><span class="roleBadge ${u.perfil==='ADMIN'?'admin':''}">${esc(u.perfil)}</span><div class="configUserActions"><button class="secondary" type="button">EDITAR</button><button class="secondary" type="button">${active?'SUSPENDER':'REATIVAR'}</button><button class="secondary" type="button">RESET SENHA</button><button class="danger" type="button">EXCLUIR</button></div>`;
+    row.innerHTML=`<div><b>${esc(u.nome)}</b><span>${esc(u.usuario)}${u.email?' • '+esc(u.email):''}</span><small>${active?'ATIVO':'SUSPENSO'}</small></div><span class="roleBadge ${u.perfil==='ADMIN'?'admin':''}">${esc(roleLabel(u.perfil))}</span><div class="configUserActions"><button class="secondary" type="button">EDITAR</button><button class="secondary" type="button">${active?'SUSPENDER':'REATIVAR'}</button><button class="secondary" type="button">RESET SENHA</button><button class="danger" type="button">EXCLUIR</button></div>`;
     const bs=row.querySelectorAll('button');
     bs[0].onclick=()=>editConfigUser(u.id);
     bs[1].onclick=()=>confirmBox(active?'Suspender usuário':'Reativar usuário',active?`Suspender o acesso de ${u.nome}?`:`Reativar o acesso de ${u.nome}?`,()=>suspendConfigUser(u.id,active));

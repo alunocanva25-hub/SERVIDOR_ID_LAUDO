@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.36"
+APP_VERSION = "1.0.0.37"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -121,7 +121,7 @@ push_devices = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
-# V1.0.0.36 — fluxo do Painel de Laudos entre OPERADOR/ADMIN e FUNCAO.
+# V1.0.0.37 — fluxo do Painel de Laudos entre OPERADOR/ADMIN e FUNCAO.
 panel_assignments = Table(
     "panel_assignments", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -773,7 +773,7 @@ def backend_info() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# V1.0.0.36 — Painel: distribuição, baixa e auditoria centralizada.
+# V1.0.0.37 — Painel: distribuição, baixa e auditoria centralizada.
 # ---------------------------------------------------------------------------
 def list_panel_users(*, active_only: bool = True, roles: list[str] | None = None) -> list[dict]:
     ensure_db()
