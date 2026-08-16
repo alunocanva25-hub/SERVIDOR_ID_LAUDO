@@ -1,0 +1,13 @@
+ID LAUDO — SERVIDOR V1.0.0.39
+
+CORREÇÃO DE CADASTRO DE USUÁRIOS
+
+- Corrige automaticamente sequência de ID da tabela profiles quando ficou fora de sincronia após migração/importação.
+- Diagnóstico de conflitos de login, e-mail e auth_user_id ficou mais robusto.
+- Não altera APK, painel, Supabase Auth, FCM ou fluxo de laudos.
+
+ATUALIZAÇÃO
+1. Substitua os arquivos do servidor no GitHub/Render.
+2. Faça o deploy.
+3. Confira /api/health: version 1.0.0.39 e push FCM_ATIVO.
+4. Tente criar novamente o usuário.

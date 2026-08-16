@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.38"
+APP_VERSION = "1.0.0.39"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -602,7 +602,43 @@ def find_app_user_conflicts(*, usuario: str = "", email: str = "", auth_user_id:
     return out
 
 
-def save_app_user(data: dict, user_id: int | None = None) -> dict:
+def _sync_profiles_id_sequence() -> None:
+    """Repara a sequência de IDs quando o banco veio de importação/migração.
+
+    Em PostgreSQL é possível a tabela possuir IDs maiores que o valor atual da
+    sequence. Nesse cenário um INSERT sem ID tenta reutilizar um ID existente e
+    gera conflito em profiles_pkey, mesmo quando login/e-mail são novos.
+    """
+    ensure_db()
+    with engine.begin() as con:
+        con.execute(text("""
+            SELECT setval(
+                pg_get_serial_sequence('public.profiles','id'),
+                COALESCE((SELECT MAX(id) FROM public.profiles), 0) + 1,
+                false
+            )
+        """))
+
+
+def _integrity_error_signature(exc: IntegrityError) -> str:
+    """Retorna constraint + mensagem do PostgreSQL para diagnóstico robusto."""
+    parts = []
+    orig = getattr(exc, "orig", None)
+    try:
+        diag = getattr(orig, "diag", None)
+        cname = getattr(diag, "constraint_name", None)
+        if cname:
+            parts.append(str(cname))
+    except Exception:
+        pass
+    try:
+        parts.append(str(orig or exc))
+    except Exception:
+        parts.append(str(exc))
+    return " ".join(parts).lower()
+
+
+def save_app_user(data: dict, user_id: int | None = None, *, _sequence_retry: bool = True) -> dict:
     ensure_db()
     nome = str(data.get("nome") or "").strip()
     usuario = str(data.get("usuario") or "").strip()
@@ -647,18 +683,32 @@ def save_app_user(data: dict, user_id: int | None = None) -> dict:
             if isinstance(d.get(k), datetime): d[k] = d[k].isoformat(timespec="seconds")
         return d
     except IntegrityError as exc:
+        sig = _integrity_error_signature(exc)
+
+        # V39: corrige automaticamente sequence fora de sincronia. Esse caso
+        # aparecia como o genérico "conflito de cadastro" mesmo com e-mail novo.
+        if not user_id and _sequence_retry and ("profiles_pkey" in sig or "key (id)=" in sig):
+            _sync_profiles_id_sequence()
+            return save_app_user(data, user_id=user_id, _sequence_retry=False)
+
+        if "usuario" in sig or "profiles_usuario_key" in sig:
+            raise ValueError(f"Já existe um usuário com o login '{usuario}'. Use outro login.") from exc
+        if "email" in sig or "ux_profiles_email_ci" in sig:
+            raise ValueError(f"Já existe um usuário com o e-mail '{email}'.") from exc
+        if "auth_user_id" in sig:
+            raise ValueError("Este acesso do Supabase Auth já está vinculado a outro perfil do ID LAUDO.") from exc
+        if "not null" in sig:
+            raise ValueError("O cadastro possui um campo obrigatório sem valor. Atualize o servidor e tente novamente.") from exc
+
+        # Mantém a mensagem segura para o usuário, mas inclui a constraint
+        # conhecida quando existir para evitar novo diagnóstico às cegas.
         constraint = ""
         try:
-            constraint = str(getattr(getattr(exc, "orig", None), "diag", None).constraint_name or "").lower()
+            constraint = str(getattr(getattr(getattr(exc, "orig", None), "diag", None), "constraint_name", None) or "").strip()
         except Exception:
-            constraint = ""
-        if "usuario" in constraint:
-            raise ValueError(f"Já existe um usuário com o login '{usuario}'. Use outro login.") from exc
-        if "email" in constraint:
-            raise ValueError(f"Já existe um usuário com o e-mail '{email}'.") from exc
-        if "auth_user_id" in constraint:
-            raise ValueError("Este acesso do Supabase Auth já está vinculado a outro perfil do ID LAUDO.") from exc
-        raise ValueError("Não foi possível salvar o usuário por um conflito de cadastro. Atualize a lista de usuários e tente novamente.") from exc
+            pass
+        suffix = f" ({constraint})" if constraint else ""
+        raise ValueError(f"Não foi possível salvar o usuário por um conflito de cadastro{suffix}. Atualize a lista de usuários e tente novamente.") from exc
 
 
 def bind_auth_profile(auth_user_id: str, email: str, nome: str = "") -> dict | None:
