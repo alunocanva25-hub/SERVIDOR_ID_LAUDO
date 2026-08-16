@@ -1,0 +1,11 @@
+ID LAUDO SERVER V1.0.0.45 — DIAGNÓSTICO DEEP HEALTH
+
+Ajuste:
+- /api/health/deep agora é público, assim como /api/health.
+- O endpoint continua apenas como diagnóstico de conexão/migração e não expõe credenciais.
+- /api/health permanece leve e independente do PostgreSQL para evitar 502 global no Render.
+
+Após o deploy:
+1. Abra /api/health e confirme version 1.0.0.45.
+2. Abra /api/health/deep.
+3. Resultado esperado quando PostgreSQL estiver saudável: database_check = OK.

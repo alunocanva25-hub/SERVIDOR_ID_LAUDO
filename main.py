@@ -194,7 +194,7 @@ def _record_scope(request: Request) -> tuple[int | None, bool]:
 
 
 PUBLIC_API_PATHS = {
-    "/api/health", "/api/auth/config", "/api/auth/login", "/api/auth/refresh",
+    "/api/health", "/api/health/deep", "/api/auth/config", "/api/auth/login", "/api/auth/refresh",
     "/api/auth/forgot-password", "/api/auth/recovery/verify",
 }
 
