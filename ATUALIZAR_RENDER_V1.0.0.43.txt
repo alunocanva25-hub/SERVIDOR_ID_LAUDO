@@ -1,0 +1,9 @@
+ID LAUDO — SERVIDOR V1.0.0.43
+
+Correção do ENVIAR PARA:
+- Destinos passam a ser montados pela mesma base usada em Configuração > Usuários.
+- Combina list_app_users + list_panel_users para tolerar bancos migrados.
+- Normaliza FUNÇÃO/FUNCAO e usuário ativo.
+- /api/panel/send-targets informa count e contagem por perfil para diagnóstico.
+
+Após publicar, confirme /api/health com version 1.0.0.43 e push FCM_ATIVO.

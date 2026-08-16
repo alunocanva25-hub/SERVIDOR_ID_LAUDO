@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.42"
+APP_VERSION = "1.0.0.43"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"

@@ -864,20 +864,63 @@ def panel_users(request: Request, role: str = ""):
     return {"ok": True, "items": [_profile_public(r) for r in rows], "current_user": _profile_public(profile)}
 
 
+def _panel_role_key(value: object) -> str:
+    raw = clean(value).upper().replace("FUNÇÃO", "FUNCAO")
+    return raw if raw in {"ADMIN", "OPERADOR", "FUNCAO"} else raw
+
+
+def _merge_panel_user_sources() -> list[dict]:
+    """Une as duas leituras de usuários para evitar lista vazia por migração.
+
+    A tela Configuração > Usuários usa list_app_users(), enquanto o fluxo
+    ENVIAR usava somente list_panel_users(). Em bancos migrados os dois caminhos
+    podem divergir por metadados antigos; por isso os destinos são montados a
+    partir da mesma fonte do cadastro e complementados pela leitura do painel.
+    """
+    merged: dict[int, dict] = {}
+    for source in (list_app_users(), list_panel_users(active_only=False)):
+        for row in source or []:
+            try:
+                rid = int(row.get("id") or 0)
+            except Exception:
+                continue
+            if not rid:
+                continue
+            item = dict(row)
+            item["perfil"] = _panel_role_key(item.get("perfil"))
+            # Ausência histórica de 'ativo' deve ser tratada como ativo.
+            if "ativo" not in item:
+                item["ativo"] = True
+            merged[rid] = {**merged.get(rid, {}), **item}
+    return list(merged.values())
+
+
 @app.get("/api/panel/send-targets")
 def panel_send_targets(request: Request):
-    """Retorna somente destinos válidos para o usuário logado.
-
-    Mantemos essa regra no servidor para que APP/Painel não dependam de
-    filtros visuais e para evitar a lista vazia por perfil escrito de forma
-    diferente em cadastros antigos.
-    """
+    """Retorna destinos reais do cadastro central, sempre atualizados."""
     profile = _require_roles(request, "ADMIN", "OPERADOR")
-    role = clean(profile.get("perfil")).upper()
-    rows = list_panel_users(active_only=True, roles=["FUNCAO"] if role == "OPERADOR" else None)
+    role = _panel_role_key(profile.get("perfil"))
     current_id = int(profile.get("id") or 0)
-    items = [_profile_public(r) for r in rows if int(r.get("id") or 0) != current_id]
-    return {"ok": True, "items": items, "current_user": _profile_public(profile)}
+    rows = _merge_panel_user_sources()
+    items = []
+    for row in rows:
+        rid = int(row.get("id") or 0)
+        if not rid or rid == current_id:
+            continue
+        if not bool(row.get("ativo", True)):
+            continue
+        target_role = _panel_role_key(row.get("perfil"))
+        # O destino operacional do fluxo de baixa é o perfil FUNCAO.
+        # ADMIN também enxerga OPERADOR/ADMIN para redistribuição, se necessário.
+        if role == "OPERADOR" and target_role != "FUNCAO":
+            continue
+        items.append(_profile_public({**row, "perfil": target_role}))
+    items.sort(key=lambda u: (0 if _panel_role_key(u.get("perfil")) == "FUNCAO" else 1, clean(u.get("nome")).lower(), int(u.get("id") or 0)))
+    return {
+        "ok": True, "items": items, "count": len(items),
+        "roles": {r: sum(1 for u in items if _panel_role_key(u.get("perfil")) == r) for r in ("FUNCAO", "OPERADOR", "ADMIN")},
+        "current_user": _profile_public(profile),
+    }
 
 
 @app.get("/api/panel/inbox")
