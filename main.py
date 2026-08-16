@@ -17,7 +17,7 @@ from storage_backend import (
     APP_NAME, APP_VERSION, STATUS_AGUARDANDO, STATUS_CRIADO, STATUS_DEVOLVIDO,
     STATUS_PRONTO, STATUS_RASCUNHO, STATUS_REVISAO, app_data_dir, delete_record,
     export_bridge, get_record, list_records, save_record, update_record_status,
-    list_app_users, save_app_user, delete_app_user, get_app_setting, set_app_setting,
+    list_app_users, save_app_user, delete_app_user, get_app_setting, set_app_setting, find_app_user_conflicts,
     list_notifications, backend_info, bootstrap_admin_info, get_app_user, bind_auth_profile,
     mark_password_changed, set_app_user_active, require_password_change_by_email,
     archive_notification, register_push_device, unregister_push_devices, list_push_tokens_for_record,
@@ -566,6 +566,16 @@ def config_user_save(request: Request, payload: dict = Body(...)):
     auth_user_id = clean((existing_profile or {}).get("auth_user_id"))
     created_auth_id = ""
     reset_sent = False
+
+    # V38: valida login/e-mail ANTES de criar qualquer usuário no Supabase.
+    usuario = clean(data.get("usuario"))
+    conflicts = find_app_user_conflicts(usuario=usuario, email=email, exclude_user_id=int(user_id) if user_id else None)
+    for conflict in conflicts:
+        if usuario and clean(conflict.get("usuario")).lower() == usuario.lower():
+            raise HTTPException(400, f"Já existe um usuário com o login '{usuario}'. Use outro login.")
+        if email and clean(conflict.get("email")).lower() == email:
+            raise HTTPException(400, f"Já existe um usuário com o e-mail '{email}'.")
+
     try:
         if auth_service.auth_enabled():
             if not auth_service.admin_configured():
@@ -578,6 +588,11 @@ def config_user_save(request: Request, payload: dict = Body(...)):
                 existing_auth = auth_service.admin_find_user_by_email(email)
                 if existing_auth:
                     auth_user_id = clean(existing_auth.get("id"))
+                    linked_profiles = find_app_user_conflicts(auth_user_id=auth_user_id, exclude_user_id=int(user_id) if user_id else None)
+                    if linked_profiles:
+                        linked = linked_profiles[0]
+                        linked_name = clean(linked.get("nome")) or clean(linked.get("usuario")) or "outro usuário"
+                        raise HTTPException(400, f"O acesso Supabase deste e-mail já está vinculado ao perfil '{linked_name}'. Atualize esse usuário em vez de criar outro.")
                     auth_service.admin_update_user(
                         auth_user_id, name=clean(data.get("nome")), role=clean(data.get("perfil") or "OPERADOR"), must_change=True
                     )
@@ -597,6 +612,11 @@ def config_user_save(request: Request, payload: dict = Body(...)):
                 reset_sent = True
             except auth_service.AuthServiceError:
                 reset_sent = False
+    except HTTPException:
+        if created_auth_id:
+            try: auth_service.admin_delete_user(created_auth_id, soft=True)
+            except Exception: pass
+        raise
     except ValueError as exc:
         if created_auth_id:
             try: auth_service.admin_delete_user(created_auth_id, soft=True)

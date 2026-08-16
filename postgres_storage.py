@@ -10,13 +10,13 @@ import uuid
 
 from sqlalchemy import (
     Boolean, Column, DateTime, Integer, JSON, LargeBinary, MetaData, String, Table, Text, Uuid,
-    create_engine, delete, desc, insert, select, update, text
+    create_engine, delete, desc, insert, select, update, text, func
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.37"
+APP_VERSION = "1.0.0.38"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -566,6 +566,42 @@ def get_app_user(user_id: int) -> dict | None:
     return d
 
 
+def find_app_user_conflicts(*, usuario: str = "", email: str = "", auth_user_id: str = "", exclude_user_id: int | None = None) -> list[dict]:
+    """Localiza conflitos reais de identidade antes de gravar um perfil.
+
+    A V37 convertia qualquer IntegrityError em "login ou e-mail", escondendo
+    inclusive conflitos de auth_user_id. A V38 separa cada causa para evitar
+    falsos diagnósticos e impedir a criação parcial no Supabase Auth.
+    """
+    ensure_db()
+    usuario = str(usuario or "").strip()
+    email = str(email or "").strip().lower()
+    auth_user_id = str(auth_user_id or "").strip()
+    clauses = []
+    if usuario:
+        clauses.append(func.lower(profiles.c.usuario) == usuario.lower())
+    if email:
+        clauses.append(func.lower(func.coalesce(profiles.c.email, "")) == email)
+    if auth_user_id:
+        clauses.append(profiles.c.auth_user_id == auth_user_id)
+    if not clauses:
+        return []
+    from sqlalchemy import or_
+    stmt = select(profiles).where(or_(*clauses))
+    if exclude_user_id:
+        stmt = stmt.where(profiles.c.id != int(exclude_user_id))
+    with engine.connect() as con:
+        rows = con.execute(stmt.order_by(profiles.c.is_system_admin.desc(), profiles.c.id)).all()
+    out=[]
+    for r in rows:
+        d=dict(r._mapping)
+        d["ativo"] = 1 if d.get("ativo") else 0
+        for k in ("created_at", "updated_at", "suspended_at", "last_login_at"):
+            if isinstance(d.get(k), datetime): d[k] = d[k].isoformat(timespec="seconds")
+        out.append(d)
+    return out
+
+
 def save_app_user(data: dict, user_id: int | None = None) -> dict:
     ensure_db()
     nome = str(data.get("nome") or "").strip()
@@ -611,7 +647,18 @@ def save_app_user(data: dict, user_id: int | None = None) -> dict:
             if isinstance(d.get(k), datetime): d[k] = d[k].isoformat(timespec="seconds")
         return d
     except IntegrityError as exc:
-        raise ValueError("Já existe um usuário com esse login ou e-mail.") from exc
+        constraint = ""
+        try:
+            constraint = str(getattr(getattr(exc, "orig", None), "diag", None).constraint_name or "").lower()
+        except Exception:
+            constraint = ""
+        if "usuario" in constraint:
+            raise ValueError(f"Já existe um usuário com o login '{usuario}'. Use outro login.") from exc
+        if "email" in constraint:
+            raise ValueError(f"Já existe um usuário com o e-mail '{email}'.") from exc
+        if "auth_user_id" in constraint:
+            raise ValueError("Este acesso do Supabase Auth já está vinculado a outro perfil do ID LAUDO.") from exc
+        raise ValueError("Não foi possível salvar o usuário por um conflito de cadastro. Atualize a lista de usuários e tente novamente.") from exc
 
 
 def bind_auth_profile(auth_user_id: str, email: str, nome: str = "") -> dict | None:

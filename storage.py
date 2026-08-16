@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.37"
+APP_VERSION = "1.0.0.38"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -304,6 +304,20 @@ def list_app_users() -> list[dict]:
             "SELECT id,nome,usuario,email,perfil,ativo,created_at,updated_at FROM app_users WHERE coalesce(is_system_admin,0)=0 ORDER BY nome COLLATE NOCASE, id"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def find_app_user_conflicts(*, usuario: str = "", email: str = "", auth_user_id: str = "", exclude_user_id: int | None = None) -> list[dict]:
+    usuario = str(usuario or "").strip().lower()
+    email = str(email or "").strip().lower()
+    out=[]
+    for u in list_app_users():
+        if exclude_user_id and int(u.get("id") or 0) == int(exclude_user_id):
+            continue
+        if usuario and str(u.get("usuario") or "").strip().lower() == usuario:
+            out.append(dict(u)); continue
+        if email and str(u.get("email") or "").strip().lower() == email:
+            out.append(dict(u))
+    return out
 
 
 def save_app_user(data: dict, user_id: int | None = None) -> dict:

@@ -1,0 +1,9 @@
+ID LAUDO — SERVIDOR V1.0.0.38
+
+CORREÇÃO DE CADASTRO DE USUÁRIOS
+- identifica separadamente conflito de LOGIN, E-MAIL e vínculo Supabase Auth;
+- valida conflitos antes de criar o acesso no Supabase;
+- evita a mensagem genérica "login ou e-mail" para qualquer IntegrityError;
+- não altera painel, APK, FCM, auditoria ou fluxo de laudos.
+
+Após o deploy, /api/health deve mostrar version 1.0.0.38.
