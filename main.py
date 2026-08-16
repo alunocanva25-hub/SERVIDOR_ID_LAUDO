@@ -60,6 +60,44 @@ def clean(value) -> str:
     return str(value or "").strip()
 
 
+PANEL_VISIBILITY_DEFAULTS = {
+    "OPERADOR": {
+        "dashboard": True, "filters": True, "imports": True, "main_table": True,
+        "new_laudo": True, "generated_folder": True, "auto_process": True,
+        "download_pdf": True, "notifications": True, "pareceres": True,
+        "ocr_rules": True, "reports": True, "display": True, "send": True,
+        "function_workspace": False,
+    },
+    "FUNCAO": {
+        "dashboard": True, "filters": False, "imports": False, "main_table": False,
+        "new_laudo": False, "generated_folder": False, "auto_process": False,
+        "download_pdf": False, "notifications": True, "pareceres": False,
+        "ocr_rules": False, "reports": False, "display": True, "send": False,
+        "function_workspace": True,
+    },
+}
+
+
+def _panel_visibility_config() -> dict:
+    raw = get_app_setting("panel_visibility", {})
+    raw = raw if isinstance(raw, dict) else {}
+    out = {}
+    for role, defaults in PANEL_VISIBILITY_DEFAULTS.items():
+        supplied = raw.get(role) if isinstance(raw.get(role), dict) else {}
+        out[role] = {key: bool(supplied.get(key, value)) for key, value in defaults.items()}
+    return out
+
+
+def _save_panel_visibility_config(value: dict) -> dict:
+    incoming = value if isinstance(value, dict) else {}
+    clean_value = {}
+    for role, defaults in PANEL_VISIBILITY_DEFAULTS.items():
+        supplied = incoming.get(role) if isinstance(incoming.get(role), dict) else {}
+        clean_value[role] = {key: bool(supplied.get(key, value)) for key, value in defaults.items()}
+    set_app_setting("panel_visibility", clean_value)
+    return clean_value
+
+
 def _runtime_backend_info() -> dict:
     info = dict(backend_info())
     ac = auth_service.config_status()
@@ -786,6 +824,24 @@ def panel_app_inbox(request: Request):
     records = list_records(limit=500, include_all=True)
     notifications = [n for n in list_notifications(limit=500) if str(n.get("status") or "").upper() != "EXCLUIDA"]
     return {"ok": True, "records": records, "notifications": notifications, "user": _profile_public(profile)}
+
+
+@app.get("/api/panel/permissions")
+def panel_permissions_get(request: Request):
+    profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
+    return {
+        "ok": True,
+        "visibility": _panel_visibility_config(),
+        "current_user": _profile_public(profile),
+    }
+
+
+@app.post("/api/panel/permissions")
+def panel_permissions_save(request: Request, payload: dict = Body(...)):
+    profile = _require_admin(request)
+    visibility = _save_panel_visibility_config(payload.get("visibility") or {})
+    _audit(request, "ALTEROU_PERMISSOES_PAINEL", entity_type="CONFIGURACAO", details={"visibility": visibility})
+    return {"ok": True, "visibility": visibility, "current_user": _profile_public(profile)}
 
 
 @app.get("/api/panel/users")
