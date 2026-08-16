@@ -1,0 +1,15 @@
+ID LAUDO — SERVIDOR V1.0.0.40
+
+CORREÇÃO
+- Corrige a constraint PostgreSQL profiles_perfil_check.
+- O banco antigo aceitava somente ADMIN/OPERADOR.
+- Agora aceita ADMIN/OPERADOR/FUNCAO.
+- A migração é automática no primeiro start após o deploy.
+
+ATUALIZAÇÃO
+1. Substitua os arquivos do repositório pelos desta versão.
+2. Faça o deploy no Render.
+3. Confira /api/health: version 1.0.0.40 e push FCM_ATIVO.
+4. Tente criar novamente o usuário com perfil FUNÇÃO.
+
+Não é necessário alterar o APK nem o painel para esta correção.

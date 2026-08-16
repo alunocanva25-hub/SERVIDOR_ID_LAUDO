@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.39"
+APP_VERSION = "1.0.0.40"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -219,6 +219,27 @@ def _ensure_online_migrations() -> None:
         con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS must_change_password boolean NOT NULL DEFAULT true"))
         con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS suspended_at timestamptz"))
         con.execute(text("ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS last_login_at timestamptz"))
+
+        # V40: o banco original possuía profiles_perfil_check aceitando apenas
+        # ADMIN/OPERADOR. Como o sistema agora possui o perfil FUNCAO, a
+        # constraint antiga precisava ser migrada antes de qualquer INSERT.
+        # DROP/ADD é idempotente e também corrige ambientes já existentes.
+        con.execute(text("ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_perfil_check"))
+        con.execute(text("""
+            UPDATE public.profiles
+               SET perfil = CASE
+                   WHEN upper(btrim(perfil)) = 'ADMIN' THEN 'ADMIN'
+                   WHEN upper(btrim(perfil)) = 'FUNCAO' THEN 'FUNCAO'
+                   WHEN upper(btrim(perfil)) = 'FUNÇÃO' THEN 'FUNCAO'
+                   ELSE 'OPERADOR'
+               END
+        """))
+        con.execute(text("""
+            ALTER TABLE public.profiles
+            ADD CONSTRAINT profiles_perfil_check
+            CHECK (perfil IN ('ADMIN','OPERADOR','FUNCAO'))
+        """))
+
         con.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_profiles_email_ci ON public.profiles (lower(email)) WHERE email IS NOT NULL AND btrim(email) <> ''"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_target_status ON public.panel_assignments (assigned_to_profile_id,status)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_owner ON public.panel_assignments (owner_profile_id)"))
