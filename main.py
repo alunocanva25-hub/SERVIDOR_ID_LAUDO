@@ -20,7 +20,7 @@ from storage_backend import (
     list_app_users, save_app_user, delete_app_user, get_app_setting, set_app_setting, find_app_user_conflicts,
     list_notifications, backend_info, bootstrap_admin_info, get_app_user, bind_auth_profile,
     mark_password_changed, set_app_user_active, require_password_change_by_email,
-    archive_notification, register_push_device, unregister_push_devices, list_push_tokens_for_record,
+    archive_notification, archive_notifications_for_record, register_push_device, unregister_push_devices, list_push_tokens_for_record,
     list_panel_users, create_panel_assignment, get_panel_assignment, list_panel_assignments, update_panel_assignment,
     add_audit_event, list_audit_events, STATUS_AGUARDANDO_BAIXA, STATUS_BAIXADO, STATUS_CORRECAO_PDF,
 )
@@ -532,7 +532,7 @@ def api_notifications(request: Request):
 
 @app.delete("/api/notifications/{notification_id}")
 def api_notification_delete(notification_id: int, request: Request):
-    _require_admin(request)
+    _require_roles(request, "ADMIN", "OPERADOR")
     if not archive_notification(notification_id):
         raise HTTPException(404, "Notificação não encontrada.")
     return {"ok": True}
@@ -821,8 +821,15 @@ def panel_app_record(record_id: int, request: Request):
 @app.get("/api/panel/app-inbox")
 def panel_app_inbox(request: Request):
     profile = _require_roles(request, "ADMIN", "OPERADOR")
-    records = list_records(limit=500, include_all=True)
-    notifications = [n for n in list_notifications(limit=500) if str(n.get("status") or "").upper() != "EXCLUIDA"]
+    pending_statuses = {STATUS_AGUARDANDO, STATUS_PRONTO, STATUS_REVISAO}
+    all_records = list_records(limit=500, include_all=True)
+    records = [r for r in all_records if clean(r.get("status")).upper() in pending_statuses]
+    valid_ids = {int(r.get("id")) for r in records if r.get("id") is not None}
+    notifications = [
+        n for n in list_notifications(limit=500)
+        if str(n.get("status") or "").upper() != "EXCLUIDA"
+        and int(n.get("espelho_id") or 0) in valid_ids
+    ]
     return {"ok": True, "records": records, "notifications": notifications, "user": _profile_public(profile)}
 
 
@@ -848,12 +855,29 @@ def panel_permissions_save(request: Request, payload: dict = Body(...)):
 def panel_users(request: Request, role: str = ""):
     profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
     role_u = clean(role).upper()
+    if role_u == "FUNÇÃO":
+        role_u = "FUNCAO"
     if role_u and role_u not in {"ADMIN", "OPERADOR", "FUNCAO"}:
         raise HTTPException(400, "Perfil inválido.")
-    # OPERADOR normalmente envia para FUNCAO; FUNCAO devolve para OPERADOR/ADMIN.
     roles = [role_u] if role_u else None
     rows = list_panel_users(active_only=True, roles=roles)
     return {"ok": True, "items": [_profile_public(r) for r in rows], "current_user": _profile_public(profile)}
+
+
+@app.get("/api/panel/send-targets")
+def panel_send_targets(request: Request):
+    """Retorna somente destinos válidos para o usuário logado.
+
+    Mantemos essa regra no servidor para que APP/Painel não dependam de
+    filtros visuais e para evitar a lista vazia por perfil escrito de forma
+    diferente em cadastros antigos.
+    """
+    profile = _require_roles(request, "ADMIN", "OPERADOR")
+    role = clean(profile.get("perfil")).upper()
+    rows = list_panel_users(active_only=True, roles=["FUNCAO"] if role == "OPERADOR" else None)
+    current_id = int(profile.get("id") or 0)
+    items = [_profile_public(r) for r in rows if int(r.get("id") or 0) != current_id]
+    return {"ok": True, "items": items, "current_user": _profile_public(profile)}
 
 
 @app.get("/api/panel/inbox")

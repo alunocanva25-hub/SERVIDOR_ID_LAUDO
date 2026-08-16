@@ -1,0 +1,10 @@
+ID LAUDO — SERVIDOR V1.0.0.42
+
+Correções:
+- Destinos do fluxo ENVIAR PARA em /api/panel/send-targets.
+- Normalização robusta do perfil FUNCAO/FUNÇÃO.
+- Caixa de revisão retorna apenas espelhos realmente pendentes/em revisão.
+- LAUDO_CRIADO e DEVOLVIDO arquivam automaticamente notificações antigas.
+- ADMIN e OPERADOR podem excluir notificações da caixa do painel.
+
+Após publicar, confira /api/health: version 1.0.0.42 e push FCM_ATIVO.

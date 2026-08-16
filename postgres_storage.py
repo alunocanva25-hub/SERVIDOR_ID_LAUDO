@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.41"
+APP_VERSION = "1.0.0.42"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -466,6 +466,17 @@ def update_record_status(record_id: int, status: str, message: str = "", remote_
             status=normalized, status_message=str(message or ""), remote_laudo_numero=str(remote_laudo_numero or ""),
             status_updated_at=now, updated_at=now, payload_json=payload,
         ))
+        # Ao concluir ou devolver ao técnico, o registro não pertence mais à fila
+        # de revisão do Painel. Arquivamos a notificação no mesmo transaction.
+        if normalized in {STATUS_CRIADO, STATUS_DEVOLVIDO}:
+            con.execute(
+                update(notifications)
+                .where(
+                    notifications.c.espelho_id == int(record_id),
+                    notifications.c.status != "EXCLUIDA",
+                )
+                .values(status="EXCLUIDA", read_at=now)
+            )
         row = con.execute(select(espelhos).where(espelhos.c.id == int(record_id))).first()
     return _row_to_dict(row)
 
@@ -497,6 +508,26 @@ def archive_notification(notification_id: int) -> bool:
             .values(status="EXCLUIDA", read_at=now_dt())
         )
     return bool(result.rowcount)
+
+
+def archive_notifications_for_record(record_id: int) -> int:
+    """Arquiva todas as notificações de revisão de um espelho.
+
+    Usado quando o espelho sai definitivamente da fila do Painel
+    (LAUDO_CRIADO/DEVOLVIDO), evitando que uma notificação antiga
+    reapareça depois que o PDF oficial já foi gerado.
+    """
+    ensure_db()
+    with engine.begin() as con:
+        result = con.execute(
+            update(notifications)
+            .where(
+                notifications.c.espelho_id == int(record_id),
+                notifications.c.status != "EXCLUIDA",
+            )
+            .values(status="EXCLUIDA", read_at=now_dt())
+        )
+    return int(result.rowcount or 0)
 
 
 def register_push_device(profile_id: int, token: str, device_name: str = "Android") -> dict:
@@ -893,21 +924,32 @@ def backend_info() -> dict:
 # ---------------------------------------------------------------------------
 # V1.0.0.37 — Painel: distribuição, baixa e auditoria centralizada.
 # ---------------------------------------------------------------------------
+def _normalize_profile_role(value: object) -> str:
+    raw = str(value or '').strip().upper()
+    return 'FUNCAO' if raw in {'FUNCAO', 'FUNÇÃO'} else ('ADMIN' if raw == 'ADMIN' else 'OPERADOR')
+
+
 def list_panel_users(*, active_only: bool = True, roles: list[str] | None = None) -> list[dict]:
+    """Lista usuários elegíveis para o fluxo do painel.
+
+    A filtragem de perfil é feita também em Python para tolerar cadastros
+    antigos com espaços/acento em FUNÇÃO. Isso impede a lista ENVIAR PARA
+    de ficar vazia por diferenças de normalização do banco.
+    """
     ensure_db()
     stmt = select(profiles).order_by(profiles.c.nome, profiles.c.id)
     if active_only:
         stmt = stmt.where(profiles.c.ativo.is_(True))
-    if roles:
-        role_values = [str(v or '').strip().upper() for v in roles if str(v or '').strip()]
-        if role_values:
-            stmt = stmt.where(profiles.c.perfil.in_(role_values))
+    requested = {_normalize_profile_role(v) for v in (roles or []) if str(v or '').strip()}
     with engine.connect() as con:
         rows = con.execute(stmt).all()
     out=[]
     for r in rows:
         d=dict(r._mapping)
+        d['perfil'] = _normalize_profile_role(d.get('perfil'))
         d['ativo']=1 if d.get('ativo') else 0
+        if requested and d['perfil'] not in requested:
+            continue
         d.pop('is_system_admin', None)
         d.pop('must_change_password', None)
         for k in ('created_at','updated_at','suspended_at','last_login_at'):

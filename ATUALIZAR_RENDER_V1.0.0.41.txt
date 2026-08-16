@@ -1,4 +1,4 @@
-ID LAUDO — SERVIDOR V1.0.0.41
+ID LAUDO — SERVIDOR V1.0.0.42
 
 - Adiciona configuração central de visibilidade do Painel por perfil.
 - ADMIN pode controlar módulos visíveis para OPERADOR e FUNÇÃO.
@@ -7,4 +7,4 @@ ID LAUDO — SERVIDOR V1.0.0.41
 ATUALIZAÇÃO
 1. Substitua os arquivos do servidor no GitHub/Render.
 2. Não remova variáveis atuais do Render.
-3. Confira /api/health: version 1.0.0.41 e push FCM_ATIVO.
+3. Confira /api/health: version 1.0.0.42 e push FCM_ATIVO.

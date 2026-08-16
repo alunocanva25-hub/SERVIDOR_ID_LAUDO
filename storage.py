@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.41"
+APP_VERSION = "1.0.0.42"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -286,6 +286,10 @@ def list_notifications(limit: int = 100) -> list[dict]:
 
 def archive_notification(notification_id: int) -> bool:
     return False
+
+
+def archive_notifications_for_record(record_id: int) -> int:
+    return 0
 
 def register_push_device(profile_id: int, token: str, device_name: str = "Android") -> dict:
     return {"profile_id": int(profile_id), "device_name": str(device_name or "Android"), "active": False}
