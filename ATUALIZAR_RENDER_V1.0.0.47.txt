@@ -1,0 +1,9 @@
+ID LAUDO SERVER V1.0.0.47 — NOTAS FS / AV / AR NA BAIXA
+
+- Migração automática adiciona nota_fs, nota_av, observacao_av, nota_ar e observacao_ar em panel_assignments.
+- A baixa exige FS.
+- AV e AR podem ficar sem nota somente com observação explicativa.
+- As notas retornam no inbox e são sincronizadas com o Painel/Relatórios.
+- Reenvio para correção limpa as notas anteriores para exigir nova conferência.
+
+Após publicar, confira /api/health e confirme version 1.0.0.47 e push FCM_ATIVO.

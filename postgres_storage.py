@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.46"
+APP_VERSION = "1.0.0.47"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -140,6 +140,11 @@ panel_assignments = Table(
     Column("assigned_by_profile_id", Integer, nullable=False),
     Column("owner_profile_id", Integer, nullable=True),
     Column("correction_message", Text, nullable=False, default=""),
+    Column("nota_fs", String(180), nullable=False, default=""),
+    Column("nota_av", String(180), nullable=False, default=""),
+    Column("observacao_av", Text, nullable=False, default=""),
+    Column("nota_ar", String(180), nullable=False, default=""),
+    Column("observacao_ar", Text, nullable=False, default=""),
     Column("metadata_json", JSON, nullable=False, default=dict),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
@@ -246,6 +251,12 @@ def _ensure_online_migrations() -> None:
         # V46: separa o aceite da notificação da baixa final. O usuário FUNCAO
         # primeiro RECEBE o laudo; somente após conferir o PDF ele confirma BAIXADO.
         con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS received_at timestamptz"))
+        # V47: notas obrigatórias da conferência/baixa do perfil FUNCAO.
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS nota_fs varchar(180) NOT NULL DEFAULT ''"))
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS nota_av varchar(180) NOT NULL DEFAULT ''"))
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS observacao_av text NOT NULL DEFAULT ''"))
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS nota_ar varchar(180) NOT NULL DEFAULT ''"))
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS observacao_ar text NOT NULL DEFAULT ''"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_target_status ON public.panel_assignments (assigned_to_profile_id,status)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_owner ON public.panel_assignments (owner_profile_id)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_events_created ON public.audit_events (created_at DESC)"))
@@ -1030,17 +1041,26 @@ def list_panel_assignments(*, profile_id: int, role: str, limit: int = 500) -> l
 
 def update_panel_assignment(assignment_id: int, *, status: str | None = None, assigned_to_profile_id: int | None = None,
                             correction_message: str | None = None, pdf_bytes: bytes | None = None, filename: str | None = None,
-                            assigned_by_profile_id: int | None = None, mark_received: bool = False) -> dict | None:
+                            assigned_by_profile_id: int | None = None, mark_received: bool = False,
+                            nota_fs: str | None = None, nota_av: str | None = None, observacao_av: str | None = None,
+                            nota_ar: str | None = None, observacao_ar: str | None = None) -> dict | None:
     import hashlib
     ensure_db(); now=now_dt(); values={'updated_at':now}
     if status is not None: values['status']=str(status or '').strip().upper()
     if assigned_to_profile_id is not None: values['assigned_to_profile_id']=int(assigned_to_profile_id)
     if assigned_by_profile_id is not None: values['assigned_by_profile_id']=int(assigned_by_profile_id)
     if correction_message is not None: values['correction_message']=str(correction_message or '').strip()
+    if nota_fs is not None: values['nota_fs']=str(nota_fs or '').strip()[:180]
+    if nota_av is not None: values['nota_av']=str(nota_av or '').strip()[:180]
+    if observacao_av is not None: values['observacao_av']=str(observacao_av or '').strip()
+    if nota_ar is not None: values['nota_ar']=str(nota_ar or '').strip()[:180]
+    if observacao_ar is not None: values['observacao_ar']=str(observacao_ar or '').strip()
     if mark_received: values['received_at']=now
     if values.get('status')==STATUS_BAIXADO: values['downloaded_at']=now
     if values.get('status')==STATUS_AGUARDANDO_BAIXA:
         values['sent_at']=now; values['received_at']=None; values['downloaded_at']=None
+        # Reenvio/correção exige nova conferência e novas notas.
+        values.update(nota_fs='', nota_av='', observacao_av='', nota_ar='', observacao_ar='')
     if pdf_bytes is not None:
         data=bytes(pdf_bytes or b'')
         if not data.startswith(b'%PDF'): raise ValueError('O arquivo enviado não é um PDF válido.')

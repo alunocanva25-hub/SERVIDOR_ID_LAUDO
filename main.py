@@ -1038,7 +1038,7 @@ def panel_assignment_download(assignment_id: int, request: Request):
 
 
 @app.post("/api/panel/assignments/{assignment_id}/downloaded")
-def panel_assignment_downloaded(assignment_id: int, request: Request):
+def panel_assignment_downloaded(assignment_id: int, request: Request, payload: dict = Body(...)):
     profile = _require_roles(request, "ADMIN", "FUNCAO")
     item = get_panel_assignment(assignment_id)
     if not item or not _can_access_assignment(profile, item):
@@ -1047,8 +1047,29 @@ def panel_assignment_downloaded(assignment_id: int, request: Request):
         return {"ok": True, "item": item}
     if clean(item.get("status")).upper() != STATUS_AGUARDANDO_BAIXA or not item.get("received_at"):
         raise HTTPException(400, "Receba e confira o laudo antes de confirmar a baixa.")
-    updated = update_panel_assignment(assignment_id, status=STATUS_BAIXADO)
-    _audit(request, "CONFIRMOU_BAIXA", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "")
+
+    nota_fs = clean(payload.get("nota_fs"))
+    nota_av = clean(payload.get("nota_av"))
+    observacao_av = clean(payload.get("observacao_av"))
+    nota_ar = clean(payload.get("nota_ar"))
+    observacao_ar = clean(payload.get("observacao_ar"))
+    if not nota_fs:
+        raise HTTPException(400, "Informe a nota FS (Fiscalização).")
+    if not nota_av and not observacao_av:
+        raise HTTPException(400, "Sem nota AV, informe uma observação breve explicando o motivo.")
+    if not nota_ar and not observacao_ar:
+        raise HTTPException(400, "Sem nota AR, informe uma observação breve explicando o motivo.")
+
+    updated = update_panel_assignment(
+        assignment_id, status=STATUS_BAIXADO,
+        nota_fs=nota_fs, nota_av=nota_av, observacao_av=observacao_av,
+        nota_ar=nota_ar, observacao_ar=observacao_ar,
+    )
+    _audit(
+        request, "CONFIRMOU_BAIXA", entity_type="LAUDO_PAINEL", entity_id=assignment_id,
+        numero_laudo=(updated or item).get("numero_laudo") or "",
+        details={"nota_fs": nota_fs, "nota_av": nota_av, "observacao_av": observacao_av, "nota_ar": nota_ar, "observacao_ar": observacao_ar},
+    )
     return {"ok": True, "item": updated}
 
 
