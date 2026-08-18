@@ -3,11 +3,15 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import base64
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import sqlite3
 import subprocess
 import sys
+import time
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -60,6 +64,122 @@ def clean(value) -> str:
     return str(value or "").strip()
 
 
+MASTER_EMAIL = clean(os.environ.get("ID_LAUDO_MASTER_EMAIL") or os.environ.get("ID_LAUDO_BOOTSTRAP_ADMIN_EMAIL") or "dayvisant4@gmail.com").lower()
+MASTER_SETTING_KEY = "panel_master_password_v1"
+USER_PERMISSION_SETTING_KEY = "panel_user_visibility_v1"
+
+
+def _master_profile() -> dict:
+    rows = find_app_user_conflicts(email=MASTER_EMAIL)
+    for row in rows or []:
+        if bool(row.get("is_system_admin")):
+            return dict(row)
+    return {}
+
+
+def _master_password_record() -> dict:
+    raw = get_app_setting(MASTER_SETTING_KEY, {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def _master_hash(password: str, salt_hex: str) -> str:
+    salt = bytes.fromhex(salt_hex)
+    return hashlib.pbkdf2_hmac("sha256", str(password).encode("utf-8"), salt, 240000).hex()
+
+
+def _verify_master_password(password: str) -> bool:
+    password = str(password or "")
+    record = _master_password_record()
+    if record.get("salt") and record.get("hash"):
+        try:
+            return hmac.compare_digest(_master_hash(password, str(record["salt"])), str(record["hash"]))
+        except Exception:
+            return False
+    # Compatibilidade: enquanto uma senha MASTER separada ainda não foi definida,
+    # a senha da conta ADMIN principal continua válida.
+    try:
+        session = auth_service.sign_in(MASTER_EMAIL, password)
+        token = clean(session.get("access_token"))
+        if not token:
+            return False
+        _user, profile = _resolve_profile_from_access_token(token)
+        return bool(profile.get("is_system_admin")) and clean(profile.get("email")).lower() == MASTER_EMAIL
+    except Exception:
+        return False
+
+
+def _set_master_password(new_password: str) -> None:
+    new_password = str(new_password or "")
+    if len(new_password) < 8:
+        raise HTTPException(400, "A senha MASTER precisa ter pelo menos 8 caracteres.")
+    salt = secrets.token_hex(16)
+    set_app_setting(MASTER_SETTING_KEY, {"salt": salt, "hash": _master_hash(new_password, salt), "updated_at": datetime.now().astimezone().isoformat(timespec="seconds")})
+
+
+def _master_signing_key() -> bytes:
+    record = _master_password_record()
+    basis = clean(record.get("hash")) or clean(os.environ.get("SUPABASE_SERVICE_ROLE_KEY")) or clean(os.environ.get("SUPABASE_SECRET_KEY")) or MASTER_EMAIL
+    return hashlib.sha256(("ID-LAUDO-MASTER|" + basis).encode("utf-8")).digest()
+
+
+def _issue_master_token(ttl_seconds: int = 900) -> str:
+    exp = int(time.time()) + max(60, min(3600, int(ttl_seconds)))
+    payload = f"{exp}.{secrets.token_urlsafe(18)}"
+    sig = hmac.new(_master_signing_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}.{sig}".encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _valid_master_token(token: str) -> bool:
+    token = clean(token)
+    if not token:
+        return False
+    try:
+        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode("utf-8")
+        exp_s, nonce, sig = raw.split(".", 2)
+        payload = f"{exp_s}.{nonce}"
+        expected = hmac.new(_master_signing_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        return int(exp_s) >= int(time.time()) and hmac.compare_digest(sig, expected)
+    except Exception:
+        return False
+
+
+def _master_from_request(request: Request) -> dict:
+    if _valid_master_token(request.headers.get("X-Master-Token") or ""):
+        profile = _master_profile()
+        if profile:
+            return profile
+    return {}
+
+
+def _panel_user_visibility_map() -> dict:
+    raw = get_app_setting(USER_PERMISSION_SETTING_KEY, {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def _save_panel_user_visibility_map(value: dict) -> dict:
+    clean_map = value if isinstance(value, dict) else {}
+    set_app_setting(USER_PERMISSION_SETTING_KEY, clean_map)
+    return clean_map
+
+
+def _effective_panel_visibility(profile: dict) -> dict:
+    role = clean(profile.get("perfil")).upper().replace("FUNÇÃO", "FUNCAO")
+    if role == "ADMIN":
+        return {key: True for key in PANEL_VISIBILITY_DEFAULTS["OPERADOR"].keys()}
+    base = dict(_panel_visibility_config().get(role) or {})
+    overrides = _panel_user_visibility_map().get(str(int(profile.get("id") or 0)), {})
+    if isinstance(overrides, dict):
+        for key in list(base):
+            if key in overrides:
+                base[key] = bool(base[key]) and bool(overrides[key])
+    # Estrutura mínima necessária ao fluxo do perfil FUNÇÃO.
+    if role == "FUNCAO":
+        for key in ("filters", "main_table", "download_pdf"):
+            base[key] = True
+        base["function_workspace"] = False
+    return base
+
+
 PANEL_VISIBILITY_DEFAULTS = {
     "OPERADOR": {
         "dashboard": True, "filters": True, "imports": True, "main_table": True,
@@ -69,11 +189,11 @@ PANEL_VISIBILITY_DEFAULTS = {
         "function_workspace": False,
     },
     "FUNCAO": {
-        "dashboard": True, "filters": False, "imports": False, "main_table": False,
+        "dashboard": True, "filters": True, "imports": True, "main_table": True,
         "new_laudo": False, "generated_folder": False, "auto_process": False,
-        "download_pdf": False, "notifications": True, "pareceres": False,
+        "download_pdf": True, "notifications": True, "pareceres": False,
         "ocr_rules": False, "reports": False, "display": True, "send": False,
-        "function_workspace": True,
+        "function_workspace": False,
     },
 }
 
@@ -166,16 +286,22 @@ def _resolve_profile_from_access_token(access_token: str) -> tuple[dict, dict]:
 
 def _require_admin(request: Request) -> dict:
     profile = getattr(request.state, "profile", None) or {}
-    if clean(profile.get("perfil")).upper() != "ADMIN":
-        raise HTTPException(403, "Acesso permitido somente para ADMIN.")
-    return profile
+    if clean(profile.get("perfil")).upper() == "ADMIN":
+        return profile
+    master = _master_from_request(request)
+    if master:
+        return master
+    raise HTTPException(403, "Acesso permitido somente para ADMIN.")
 
 
 def _require_system_admin(request: Request) -> dict:
     profile = getattr(request.state, "profile", None) or {}
-    if not bool(profile.get("is_system_admin")):
-        raise HTTPException(403, "Acesso permitido somente ao MASTER do sistema.")
-    return profile
+    if bool(profile.get("is_system_admin")):
+        return profile
+    master = _master_from_request(request)
+    if master:
+        return master
+    raise HTTPException(403, "Acesso permitido somente ao MASTER do sistema.")
 
 
 def _require_roles(request: Request, *roles: str) -> dict:
@@ -883,6 +1009,7 @@ def panel_permissions_get(request: Request):
     return {
         "ok": True,
         "visibility": _panel_visibility_config(),
+        "effective_visibility": _effective_panel_visibility(profile),
         "current_user": _profile_public(profile),
     }
 
@@ -893,6 +1020,89 @@ def panel_permissions_save(request: Request, payload: dict = Body(...)):
     visibility = _save_panel_visibility_config(payload.get("visibility") or {})
     _audit(request, "ALTEROU_PERMISSOES_PAINEL", entity_type="CONFIGURACAO", details={"visibility": visibility})
     return {"ok": True, "visibility": visibility, "current_user": _profile_public(profile)}
+
+
+@app.get("/api/panel/user-permissions")
+def panel_user_permissions_get(request: Request, profile_id: int):
+    _require_admin(request)
+    target = get_app_user(int(profile_id))
+    if not target:
+        raise HTTPException(404, "Usuário não encontrado.")
+    role = clean(target.get("perfil")).upper().replace("FUNÇÃO", "FUNCAO")
+    if role == "ADMIN" or bool(target.get("is_system_admin")):
+        raise HTTPException(400, "As permissões individuais são destinadas a OPERADOR e FUNÇÃO.")
+    raw = _panel_user_visibility_map()
+    overrides = raw.get(str(int(profile_id)), {}) if isinstance(raw.get(str(int(profile_id))), dict) else {}
+    return {"ok": True, "profile": _profile_public(target), "overrides": overrides, "effective_visibility": _effective_panel_visibility(target)}
+
+
+@app.post("/api/panel/user-permissions")
+def panel_user_permissions_save(request: Request, payload: dict = Body(...)):
+    _require_admin(request)
+    profile_id = int(payload.get("profile_id") or 0)
+    target = get_app_user(profile_id)
+    if not target:
+        raise HTTPException(404, "Usuário não encontrado.")
+    role = clean(target.get("perfil")).upper().replace("FUNÇÃO", "FUNCAO")
+    if role == "ADMIN" or bool(target.get("is_system_admin")):
+        raise HTTPException(400, "Não é possível limitar individualmente um ADMIN por esta tela.")
+    allowed = set((PANEL_VISIBILITY_DEFAULTS.get(role) or {}).keys())
+    incoming = payload.get("permissions") if isinstance(payload.get("permissions"), dict) else {}
+    cleaned = {key: bool(value) for key, value in incoming.items() if key in allowed}
+    raw = _panel_user_visibility_map()
+    raw[str(profile_id)] = cleaned
+    _save_panel_user_visibility_map(raw)
+    _audit(request, "ALTEROU_PERMISSOES_USUARIO", entity_type="USUARIO", entity_id=profile_id, details={"usuario": target.get("email") or target.get("usuario"), "permissions": cleaned})
+    return {"ok": True, "profile": _profile_public(target), "overrides": cleaned, "effective_visibility": _effective_panel_visibility(target)}
+
+
+@app.post("/api/panel/master/verify")
+def panel_master_verify(request: Request, payload: dict = Body(...)):
+    _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
+    password = str(payload.get("password") or "")
+    if not _verify_master_password(password):
+        raise HTTPException(401, "Senha MASTER inválida.")
+    profile = _master_profile()
+    if not profile:
+        raise HTTPException(503, "Conta MASTER principal não localizada.")
+    token = _issue_master_token()
+    return {"ok": True, "master_token": token, "master": _profile_public(profile), "expires_in": 900}
+
+
+@app.post("/api/panel/master/password")
+def panel_master_password_change(request: Request, payload: dict = Body(...)):
+    profile = _require_system_admin(request)
+    if clean(profile.get("email")).lower() != MASTER_EMAIL:
+        raise HTTPException(403, "Somente a conta MASTER principal pode alterar a senha MASTER.")
+    current_password = str(payload.get("current_password") or "")
+    new_password = str(payload.get("new_password") or "")
+    if not _verify_master_password(current_password):
+        raise HTTPException(401, "Senha MASTER atual inválida.")
+    _set_master_password(new_password)
+    _audit(request, "ALTEROU_SENHA_MASTER", entity_type="CONFIGURACAO")
+    return {"ok": True}
+
+
+@app.post("/api/panel/delete-authorize")
+def panel_delete_authorize(request: Request, payload: dict = Body(...)):
+    _require_roles(request, "ADMIN", "OPERADOR")
+    typed = str(payload.get("authorization") or "")
+    if not typed.endswith("@del"):
+        raise HTTPException(401, "Autorização de exclusão inválida.")
+    password = typed[:-4]
+    if not password:
+        raise HTTPException(401, "Informe a senha do ADMIN seguida de @del.")
+    try:
+        session = auth_service.sign_in(MASTER_EMAIL, password)
+        token = clean(session.get("access_token"))
+        if not token:
+            raise ValueError()
+        _user, master = _resolve_profile_from_access_token(token)
+        if not bool(master.get("is_system_admin")):
+            raise ValueError()
+    except Exception:
+        raise HTTPException(401, "Senha do ADMIN inválida para exclusão.")
+    return {"ok": True}
 
 
 @app.get("/api/panel/users")
@@ -1099,10 +1309,36 @@ def panel_assignment_return(assignment_id: int, request: Request, payload: dict 
     requester_id = int(profile.get("id") or 0) if clean(profile.get("perfil")).upper() == "FUNCAO" else int(item.get("correction_requested_by_profile_id") or 0)
     updated = update_panel_assignment(
         assignment_id, status=STATUS_CORRECAO_PDF, assigned_to_profile_id=target_id, correction_message=reason,
-        correction_requested_by_profile_id=requester_id or None, reset_correction_notification=True,
+        correction_requested_by_profile_id=requester_id or None, reset_correction_notification=True, reset_correction_progress=True,
     )
     _audit(request, "DEVOLVEU_PARA_CORRECAO_PDF", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "", details={"motivo": reason, "destino_id": target_id, "destino_nome": target.get("nome"), "solicitante_correcao_id": requester_id})
     return {"ok": True, "item": updated, "target": _profile_public(target)}
+
+
+@app.post("/api/panel/assignments/{assignment_id}/corrected")
+def panel_assignment_corrected(assignment_id: int, request: Request):
+    profile = _require_roles(request, "ADMIN", "OPERADOR")
+    item = get_panel_assignment(assignment_id)
+    if not item or not _can_access_assignment(profile, item):
+        raise HTTPException(404, "Laudo de correção não encontrado para este usuário.")
+    if clean(item.get("status")).upper() != STATUS_CORRECAO_PDF:
+        raise HTTPException(400, "Este laudo não está aguardando correção.")
+    updated = update_panel_assignment(assignment_id, mark_correction_completed=True, reset_correction_notification=True)
+    _audit(request, "CORRIGIU_PDF", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "")
+    return {"ok": True, "item": updated or item}
+
+
+@app.post("/api/panel/assignments/{assignment_id}/corrected-reviewed")
+def panel_assignment_corrected_reviewed(assignment_id: int, request: Request):
+    profile = _require_roles(request, "ADMIN", "OPERADOR")
+    item = get_panel_assignment(assignment_id)
+    if not item or not _can_access_assignment(profile, item):
+        raise HTTPException(404, "Laudo de correção não encontrado para este usuário.")
+    if clean(item.get("status")).upper() != STATUS_CORRECAO_PDF or not item.get("correction_completed_at"):
+        raise HTTPException(400, "Salve a correção antes de revisar o PDF corrigido.")
+    updated = update_panel_assignment(assignment_id, mark_correction_reviewed=True)
+    _audit(request, "ABRIU_PDF_CORRIGIDO", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "")
+    return {"ok": True, "item": updated or item}
 
 
 @app.delete("/api/panel/assignments/{assignment_id}/correction-notification")
@@ -1137,6 +1373,11 @@ def panel_assignment_resend(assignment_id: int, request: Request, payload: dict 
     target = next((u for u in list_panel_users(active_only=True, roles=["FUNCAO"]) if int(u.get("id") or 0) == target_id), None)
     if not target:
         raise HTTPException(404, "Usuário FUNCAO de destino não encontrado.")
+    if clean(item.get("status")).upper() == STATUS_CORRECAO_PDF:
+        if not item.get("correction_completed_at"):
+            raise HTTPException(400, "Primeiro salve o PDF corrigido.")
+        if not item.get("correction_reviewed_at"):
+            raise HTTPException(400, "Abra o PDF corrigido pela notificação e revise antes de reenviar.")
     pdf_bytes = None
     raw = clean(payload.get("pdf_base64"))
     if raw:

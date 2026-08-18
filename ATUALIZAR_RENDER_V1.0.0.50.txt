@@ -1,0 +1,7 @@
+ID LAUDO SERVER — V1.0.0.50
+
+- Senha MASTER separada e alterável pelo ADMIN principal.
+- Token MASTER temporário para atalhos secretos sem trocar o usuário logado.
+- Autorização de exclusão em lote com senha ADMIN + @del.
+- Permissões individuais por usuário.
+- Fluxo de correção registra CORRIGIDO e REVISADO antes de permitir reenvio.

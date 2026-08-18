@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.49"
+APP_VERSION = "1.0.0.50"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -142,6 +142,8 @@ panel_assignments = Table(
     # V48: guarda quem solicitou a correção para priorizar o reenvio ao mesmo usuário FUNÇÃO.
     Column("correction_requested_by_profile_id", Integer, nullable=True),
     Column("correction_notification_dismissed_at", DateTime(timezone=True), nullable=True),
+    Column("correction_completed_at", DateTime(timezone=True), nullable=True),
+    Column("correction_reviewed_at", DateTime(timezone=True), nullable=True),
     Column("correction_message", Text, nullable=False, default=""),
     Column("nota_fs", String(180), nullable=False, default=""),
     Column("nota_av", String(180), nullable=False, default=""),
@@ -264,6 +266,9 @@ def _ensure_online_migrations() -> None:
         # e permite ocultar somente a notificação, sem excluir o laudo/fluxo.
         con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS correction_requested_by_profile_id integer"))
         con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS correction_notification_dismissed_at timestamptz"))
+        # V50: correção precisa ser salva e depois realmente reaberta antes do reenvio.
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS correction_completed_at timestamptz"))
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS correction_reviewed_at timestamptz"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_target_status ON public.panel_assignments (assigned_to_profile_id,status)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_correction_requester ON public.panel_assignments (correction_requested_by_profile_id)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_owner ON public.panel_assignments (owner_profile_id)"))
@@ -985,7 +990,7 @@ def _assignment_public(d: dict, *, include_pdf: bool = False) -> dict:
     out=dict(d or {})
     if not include_pdf:
         out.pop('pdf_data', None)
-    for k in ('created_at','updated_at','sent_at','received_at','downloaded_at'):
+    for k in ('created_at','updated_at','sent_at','received_at','downloaded_at','correction_notification_dismissed_at','correction_completed_at','correction_reviewed_at'):
         if isinstance(out.get(k), datetime): out[k]=out[k].isoformat(timespec='seconds')
     return out
 
@@ -1009,7 +1014,7 @@ def create_panel_assignment(*, pdf_bytes: bytes, filename: str, numero_laudo: st
         status=STATUS_AGUARDANDO_BAIXA, assigned_to_profile_id=int(assigned_to_profile_id),
         assigned_by_profile_id=int(assigned_by_profile_id), owner_profile_id=int(owner_profile_id or assigned_by_profile_id),
         correction_requested_by_profile_id=None, correction_notification_dismissed_at=None,
-        correction_message='', metadata_json=dict(metadata_json or {}), updated_at=now, sent_at=now, received_at=None, downloaded_at=None,
+        correction_completed_at=None, correction_reviewed_at=None, correction_message='', metadata_json=dict(metadata_json or {}), updated_at=now, sent_at=now, received_at=None, downloaded_at=None,
     )
     with engine.begin() as con:
         existing=con.execute(select(panel_assignments).where(panel_assignments.c.document_uid==uid)).first()
@@ -1054,6 +1059,8 @@ def update_panel_assignment(assignment_id: int, *, status: str | None = None, as
                             assigned_by_profile_id: int | None = None, mark_received: bool = False,
                             correction_requested_by_profile_id: int | None = None,
                             reset_correction_notification: bool = False, dismiss_correction_notification: bool = False,
+                            mark_correction_completed: bool = False, mark_correction_reviewed: bool = False,
+                            reset_correction_progress: bool = False,
                             nota_fs: str | None = None, nota_av: str | None = None, observacao_av: str | None = None,
                             nota_ar: str | None = None, observacao_ar: str | None = None) -> dict | None:
     import hashlib
@@ -1064,6 +1071,12 @@ def update_panel_assignment(assignment_id: int, *, status: str | None = None, as
     if correction_requested_by_profile_id is not None: values['correction_requested_by_profile_id']=int(correction_requested_by_profile_id)
     if reset_correction_notification: values['correction_notification_dismissed_at']=None
     if dismiss_correction_notification: values['correction_notification_dismissed_at']=now
+    if reset_correction_progress:
+        values['correction_completed_at']=None; values['correction_reviewed_at']=None
+    if mark_correction_completed:
+        values['correction_completed_at']=now; values['correction_reviewed_at']=None
+    if mark_correction_reviewed:
+        values['correction_reviewed_at']=now
     if correction_message is not None: values['correction_message']=str(correction_message or '').strip()
     if nota_fs is not None: values['nota_fs']=str(nota_fs or '').strip()[:180]
     if nota_av is not None: values['nota_av']=str(nota_av or '').strip()[:180]
@@ -1077,6 +1090,8 @@ def update_panel_assignment(assignment_id: int, *, status: str | None = None, as
         # O reenvio conclui a pendência de correção; a notificação antiga deixa
         # de existir pelo status e a próxima devolução poderá criar uma nova.
         values['correction_notification_dismissed_at']=None
+        values['correction_completed_at']=None
+        values['correction_reviewed_at']=None
         # Reenvio/correção exige nova conferência e novas notas.
         values.update(nota_fs='', nota_av='', observacao_av='', nota_ar='', observacao_ar='')
     if pdf_bytes is not None:
