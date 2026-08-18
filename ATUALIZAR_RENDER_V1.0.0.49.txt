@@ -1,0 +1,7 @@
+ID LAUDO SERVER V1.0.0.49 — MASTER / AUDITORIA
+
+- Mantém o fluxo de correção/reenvio da V48.
+- Adiciona exclusão do histórico de auditoria somente para o usuário MASTER (is_system_admin).
+- Endpoint DELETE /api/audit exige MASTER no servidor, não apenas ocultação visual no painel.
+
+Após publicar, confira /api/health e confirme version 1.0.0.49 e push FCM_ATIVO.

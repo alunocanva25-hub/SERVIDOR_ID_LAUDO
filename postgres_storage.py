@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.48"
+APP_VERSION = "1.0.0.49"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -1101,6 +1101,13 @@ def add_audit_event(profile: dict | None, action: str, *, entity_type: str = '',
     with engine.begin() as con:
         rid=int(con.execute(insert(audit_events).values(**values).returning(audit_events.c.id)).scalar_one())
     return {'id':rid, **values, 'created_at':now.isoformat(timespec='seconds')}
+
+def clear_audit_events() -> int:
+    """Apaga o histórico de auditoria. Uso restrito ao MASTER no endpoint HTTP."""
+    ensure_db()
+    with engine.begin() as con:
+        result = con.execute(delete(audit_events))
+        return int(result.rowcount or 0)
 
 def list_audit_events(*, limit: int = 500, profile_id: int | None = None, action: str = '', numero_laudo: str = '') -> list[dict]:
     ensure_db(); stmt=select(audit_events).order_by(desc(audit_events.c.created_at)).limit(max(1,min(5000,int(limit or 500))))

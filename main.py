@@ -22,7 +22,7 @@ from storage_backend import (
     mark_password_changed, set_app_user_active, require_password_change_by_email,
     archive_notification, archive_notifications_for_record, register_push_device, unregister_push_devices, list_push_tokens_for_record,
     list_panel_users, create_panel_assignment, get_panel_assignment, list_panel_assignments, update_panel_assignment,
-    add_audit_event, list_audit_events, STATUS_AGUARDANDO_BAIXA, STATUS_BAIXADO, STATUS_CORRECAO_PDF,
+    add_audit_event, list_audit_events, clear_audit_events, STATUS_AGUARDANDO_BAIXA, STATUS_BAIXADO, STATUS_CORRECAO_PDF,
 )
 import auth_service
 import push_service
@@ -168,6 +168,13 @@ def _require_admin(request: Request) -> dict:
     profile = getattr(request.state, "profile", None) or {}
     if clean(profile.get("perfil")).upper() != "ADMIN":
         raise HTTPException(403, "Acesso permitido somente para ADMIN.")
+    return profile
+
+
+def _require_system_admin(request: Request) -> dict:
+    profile = getattr(request.state, "profile", None) or {}
+    if not bool(profile.get("is_system_admin")):
+        raise HTTPException(403, "Acesso permitido somente ao MASTER do sistema.")
     return profile
 
 
@@ -1156,6 +1163,13 @@ def audit_list(request: Request, limit: int = 500, profile_id: int = 0, action: 
     _require_admin(request)
     items = list_audit_events(limit=limit, profile_id=profile_id or None, action=action, numero_laudo=numero_laudo)
     return {"ok": True, "items": items, "users": [_profile_public(u) for u in list_panel_users(active_only=False)]}
+
+
+@app.delete("/api/audit")
+def audit_clear(request: Request):
+    _require_system_admin(request)
+    deleted = clear_audit_events()
+    return {"ok": True, "deleted": int(deleted)}
 
 
 @app.post("/api/open-outbox")

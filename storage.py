@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.48"
+APP_VERSION = "1.0.0.49"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -474,3 +474,4 @@ def update_panel_assignment(assignment_id, **kwargs): return None
 def add_audit_event(profile, action, **kwargs):
     return {"id":0,"action":str(action or ""),"created_at":now_iso() if "now_iso" in globals() else datetime.now().isoformat(timespec="seconds")}
 def list_audit_events(*, limit=500, profile_id=None, action="", numero_laudo=""): return []
+def clear_audit_events(): return 0
