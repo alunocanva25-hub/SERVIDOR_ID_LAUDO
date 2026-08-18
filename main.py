@@ -1082,13 +1082,40 @@ def panel_assignment_return(assignment_id: int, request: Request, payload: dict 
     reason = clean(payload.get("message"))
     if not reason:
         raise HTTPException(400, "Informe o motivo da correção.")
-    target_id = int(payload.get("target_profile_id") or item.get("owner_profile_id") or item.get("assigned_by_profile_id") or 0)
+    # A correção volta prioritariamente para QUEM ENVIOU por último. O owner é
+    # apenas contingência para documentos antigos. Também guardamos quem, no
+    # perfil FUNÇÃO, solicitou a correção para priorizar o reenvio posterior.
+    target_id = int(payload.get("target_profile_id") or item.get("assigned_by_profile_id") or item.get("owner_profile_id") or 0)
     target = next((u for u in list_panel_users(active_only=True, roles=["ADMIN","OPERADOR"]) if int(u.get("id") or 0) == target_id), None)
     if not target:
         raise HTTPException(404, "OPERADOR/ADMIN de destino não encontrado.")
-    updated = update_panel_assignment(assignment_id, status=STATUS_CORRECAO_PDF, assigned_to_profile_id=target_id, correction_message=reason)
-    _audit(request, "DEVOLVEU_PARA_CORRECAO_PDF", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "", details={"motivo": reason, "destino_id": target_id, "destino_nome": target.get("nome")})
+    requester_id = int(profile.get("id") or 0) if clean(profile.get("perfil")).upper() == "FUNCAO" else int(item.get("correction_requested_by_profile_id") or 0)
+    updated = update_panel_assignment(
+        assignment_id, status=STATUS_CORRECAO_PDF, assigned_to_profile_id=target_id, correction_message=reason,
+        correction_requested_by_profile_id=requester_id or None, reset_correction_notification=True,
+    )
+    _audit(request, "DEVOLVEU_PARA_CORRECAO_PDF", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "", details={"motivo": reason, "destino_id": target_id, "destino_nome": target.get("nome"), "solicitante_correcao_id": requester_id})
     return {"ok": True, "item": updated, "target": _profile_public(target)}
+
+
+@app.delete("/api/panel/assignments/{assignment_id}/correction-notification")
+def panel_assignment_dismiss_correction_notification(assignment_id: int, request: Request):
+    """Oculta somente a notificação de correção para o responsável atual.
+
+    O assignment/laudo continua íntegro e permanece disponível no painel para
+    correção e reenvio. Um novo retorno de FUNÇÃO torna a notificação visível novamente.
+    """
+    profile = _require_roles(request, "ADMIN", "OPERADOR")
+    item = get_panel_assignment(assignment_id)
+    if not item or not _can_access_assignment(profile, item):
+        raise HTTPException(404, "Laudo de correção não encontrado para este usuário.")
+    if clean(item.get("status")).upper() != STATUS_CORRECAO_PDF:
+        return {"ok": True, "item": item}
+    if int(item.get("assigned_to_profile_id") or 0) != int(profile.get("id") or 0):
+        raise HTTPException(403, "Esta notificação pertence a outro usuário.")
+    updated = update_panel_assignment(assignment_id, dismiss_correction_notification=True)
+    _audit(request, "EXCLUIU_NOTIFICACAO_CORRECAO", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "")
+    return {"ok": True, "item": updated or item}
 
 
 @app.post("/api/panel/assignments/{assignment_id}/resend")
@@ -1097,7 +1124,9 @@ def panel_assignment_resend(assignment_id: int, request: Request, payload: dict 
     item = get_panel_assignment(assignment_id)
     if not item or not _can_access_assignment(profile, item):
         raise HTTPException(404, "Laudo não encontrado para este usuário.")
-    target_id = int(payload.get("target_profile_id") or 0)
+    # Se o painel não informar destino, o usuário que solicitou a correção é a
+    # prioridade natural. A interface ainda permite escolher outro FUNÇÃO.
+    target_id = int(payload.get("target_profile_id") or item.get("correction_requested_by_profile_id") or 0)
     target = next((u for u in list_panel_users(active_only=True, roles=["FUNCAO"]) if int(u.get("id") or 0) == target_id), None)
     if not target:
         raise HTTPException(404, "Usuário FUNCAO de destino não encontrado.")
@@ -1110,7 +1139,8 @@ def panel_assignment_resend(assignment_id: int, request: Request, payload: dict 
         updated = update_panel_assignment(assignment_id, status=STATUS_AGUARDANDO_BAIXA, assigned_to_profile_id=target_id, assigned_by_profile_id=int(profile.get("id")), correction_message="", pdf_bytes=pdf_bytes, filename=clean(payload.get("filename")) or None)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    _audit(request, "REENVIOU_PARA_FUNCAO", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "", details={"destino_id": target_id, "destino_nome": target.get("nome")})
+    requester_id = int(item.get("correction_requested_by_profile_id") or 0)
+    _audit(request, "REENVIOU_PARA_FUNCAO", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "", details={"destino_id": target_id, "destino_nome": target.get("nome"), "prioridade_solicitante_correcao": bool(requester_id and requester_id == target_id), "solicitante_correcao_id": requester_id})
     return {"ok": True, "item": updated, "target": _profile_public(target)}
 
 

@@ -1,0 +1,10 @@
+ID LAUDO SERVER V1.0.0.48 — RETORNO DE CORREÇÃO / REENVIO
+
+- A devolução da FUNÇÃO volta para o último ADMIN/OPERADOR que enviou o laudo.
+- O servidor guarda qual usuário FUNÇÃO solicitou a correção.
+- No reenvio, esse usuário é a prioridade, mas outro FUNÇÃO ativo pode receber.
+- A notificação de CORRECAO_PDF some automaticamente após reenvio.
+- A notificação pode ser excluída sem excluir o laudo/assignment.
+- Uma nova devolução torna a notificação visível novamente.
+
+Após publicar, confira /api/health e confirme version 1.0.0.48 e push FCM_ATIVO.

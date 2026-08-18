@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.47"
+APP_VERSION = "1.0.0.48"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -139,6 +139,9 @@ panel_assignments = Table(
     Column("assigned_to_profile_id", Integer, nullable=False),
     Column("assigned_by_profile_id", Integer, nullable=False),
     Column("owner_profile_id", Integer, nullable=True),
+    # V48: guarda quem solicitou a correção para priorizar o reenvio ao mesmo usuário FUNÇÃO.
+    Column("correction_requested_by_profile_id", Integer, nullable=True),
+    Column("correction_notification_dismissed_at", DateTime(timezone=True), nullable=True),
     Column("correction_message", Text, nullable=False, default=""),
     Column("nota_fs", String(180), nullable=False, default=""),
     Column("nota_av", String(180), nullable=False, default=""),
@@ -257,7 +260,12 @@ def _ensure_online_migrations() -> None:
         con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS observacao_av text NOT NULL DEFAULT ''"))
         con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS nota_ar varchar(180) NOT NULL DEFAULT ''"))
         con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS observacao_ar text NOT NULL DEFAULT ''"))
+        # V48: retorno de correção lembra o usuário FUNÇÃO que solicitou a correção
+        # e permite ocultar somente a notificação, sem excluir o laudo/fluxo.
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS correction_requested_by_profile_id integer"))
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS correction_notification_dismissed_at timestamptz"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_target_status ON public.panel_assignments (assigned_to_profile_id,status)"))
+        con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_correction_requester ON public.panel_assignments (correction_requested_by_profile_id)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_owner ON public.panel_assignments (owner_profile_id)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_events_created ON public.audit_events (created_at DESC)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_events_profile ON public.audit_events (profile_id,created_at DESC)"))
@@ -1000,6 +1008,7 @@ def create_panel_assignment(*, pdf_bytes: bytes, filename: str, numero_laudo: st
         filename=str(filename or 'LAUDO.pdf').strip()[:260], pdf_data=data, pdf_size=len(data), pdf_sha256=sha,
         status=STATUS_AGUARDANDO_BAIXA, assigned_to_profile_id=int(assigned_to_profile_id),
         assigned_by_profile_id=int(assigned_by_profile_id), owner_profile_id=int(owner_profile_id or assigned_by_profile_id),
+        correction_requested_by_profile_id=None, correction_notification_dismissed_at=None,
         correction_message='', metadata_json=dict(metadata_json or {}), updated_at=now, sent_at=now, received_at=None, downloaded_at=None,
     )
     with engine.begin() as con:
@@ -1029,19 +1038,22 @@ def list_panel_assignments(*, profile_id: int, role: str, limit: int = 500) -> l
     with engine.connect() as con:
         rows=con.execute(stmt).all()
         user_rows=con.execute(select(profiles.c.id,profiles.c.nome,profiles.c.email,profiles.c.perfil)).all()
-    users={int(r[0]): {'id':int(r[0]),'nome':r[1] or '', 'email':r[2] or '', 'perfil':r[3] or ''} for r in user_rows}
+    users={int(r[0]): {'id':int(r[0]),'nome':r[1] or '', 'email':r[2] or '', 'perfil':_normalize_profile_role(r[3] or '')} for r in user_rows}
     out=[]
     for r in rows:
         d=_assignment_public(dict(r._mapping))
         d['assigned_to']=users.get(int(d.get('assigned_to_profile_id') or 0),{})
         d['assigned_by']=users.get(int(d.get('assigned_by_profile_id') or 0),{})
         d['owner']=users.get(int(d.get('owner_profile_id') or 0),{})
+        d['correction_requested_by']=users.get(int(d.get('correction_requested_by_profile_id') or 0),{})
         out.append(d)
     return out
 
 def update_panel_assignment(assignment_id: int, *, status: str | None = None, assigned_to_profile_id: int | None = None,
                             correction_message: str | None = None, pdf_bytes: bytes | None = None, filename: str | None = None,
                             assigned_by_profile_id: int | None = None, mark_received: bool = False,
+                            correction_requested_by_profile_id: int | None = None,
+                            reset_correction_notification: bool = False, dismiss_correction_notification: bool = False,
                             nota_fs: str | None = None, nota_av: str | None = None, observacao_av: str | None = None,
                             nota_ar: str | None = None, observacao_ar: str | None = None) -> dict | None:
     import hashlib
@@ -1049,6 +1061,9 @@ def update_panel_assignment(assignment_id: int, *, status: str | None = None, as
     if status is not None: values['status']=str(status or '').strip().upper()
     if assigned_to_profile_id is not None: values['assigned_to_profile_id']=int(assigned_to_profile_id)
     if assigned_by_profile_id is not None: values['assigned_by_profile_id']=int(assigned_by_profile_id)
+    if correction_requested_by_profile_id is not None: values['correction_requested_by_profile_id']=int(correction_requested_by_profile_id)
+    if reset_correction_notification: values['correction_notification_dismissed_at']=None
+    if dismiss_correction_notification: values['correction_notification_dismissed_at']=now
     if correction_message is not None: values['correction_message']=str(correction_message or '').strip()
     if nota_fs is not None: values['nota_fs']=str(nota_fs or '').strip()[:180]
     if nota_av is not None: values['nota_av']=str(nota_av or '').strip()[:180]
@@ -1059,6 +1074,9 @@ def update_panel_assignment(assignment_id: int, *, status: str | None = None, as
     if values.get('status')==STATUS_BAIXADO: values['downloaded_at']=now
     if values.get('status')==STATUS_AGUARDANDO_BAIXA:
         values['sent_at']=now; values['received_at']=None; values['downloaded_at']=None
+        # O reenvio conclui a pendência de correção; a notificação antiga deixa
+        # de existir pelo status e a próxima devolução poderá criar uma nova.
+        values['correction_notification_dismissed_at']=None
         # Reenvio/correção exige nova conferência e novas notas.
         values.update(nota_fs='', nota_av='', observacao_av='', nota_ar='', observacao_ar='')
     if pdf_bytes is not None:
