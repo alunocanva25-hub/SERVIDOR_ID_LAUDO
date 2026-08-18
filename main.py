@@ -25,7 +25,7 @@ from storage_backend import (
     list_notifications, backend_info, bootstrap_admin_info, get_app_user, bind_auth_profile,
     mark_password_changed, set_app_user_active, require_password_change_by_email,
     archive_notification, archive_notifications_for_record, register_push_device, unregister_push_devices, list_push_tokens_for_record,
-    list_panel_users, create_panel_assignment, get_panel_assignment, list_panel_assignments, update_panel_assignment,
+    list_panel_users, create_panel_assignment, upsert_panel_created_assignment, get_panel_assignment, list_panel_assignments, update_panel_assignment,
     list_panel_deleted_ids, trash_panel_assignment, restore_panel_assignment, purge_panel_assignment,
     add_audit_event, list_audit_events, clear_audit_events, STATUS_AGUARDANDO_BAIXA, STATUS_BAIXADO, STATUS_CORRECAO_PDF,
 )
@@ -152,6 +152,21 @@ def _master_from_request(request: Request) -> dict:
     return {}
 
 
+
+def _is_master_profile(profile: dict | None) -> bool:
+    p = dict(profile or {})
+    return bool(p.get("is_system_admin")) and clean(p.get("email")).lower() == MASTER_EMAIL
+
+
+def _guard_master_target(request: Request, target: dict | None) -> None:
+    """Nenhum ADMIN secundário pode editar/suspender/resetar/excluir o MASTER."""
+    if not _is_master_profile(target):
+        return
+    actor = getattr(request.state, "profile", None) or {}
+    if not _is_master_profile(actor):
+        raise HTTPException(403, "O ADMIN MASTER não pode ser alterado por outro administrador.")
+
+
 def _panel_user_visibility_map() -> dict:
     raw = get_app_setting(USER_PERMISSION_SETTING_KEY, {})
     return raw if isinstance(raw, dict) else {}
@@ -165,8 +180,8 @@ def _save_panel_user_visibility_map(value: dict) -> dict:
 
 def _effective_panel_visibility(profile: dict) -> dict:
     role = clean(profile.get("perfil")).upper().replace("FUNÇÃO", "FUNCAO")
-    if role == "ADMIN":
-        return {key: True for key in PANEL_VISIBILITY_DEFAULTS["OPERADOR"].keys()}
+    if _is_master_profile(profile):
+        return {key: True for key in PANEL_VISIBILITY_DEFAULTS["ADMIN"].keys()}
     base = dict(_panel_visibility_config().get(role) or {})
     overrides = _panel_user_visibility_map().get(str(int(profile.get("id") or 0)), {})
     if isinstance(overrides, dict):
@@ -182,6 +197,14 @@ def _effective_panel_visibility(profile: dict) -> dict:
 
 
 PANEL_VISIBILITY_DEFAULTS = {
+    "ADMIN": {
+        "dashboard": True, "filters": True, "imports": True, "main_table": True,
+        "new_laudo": True, "generated_folder": True, "auto_process": True,
+        "download_pdf": True, "notifications": True, "pareceres": True,
+        "ocr_rules": True, "reports": True, "display": True, "send": True, "delete_laudos": True,
+        "users": True, "database": True, "audit": True, "permissions": True,
+        "function_workspace": False,
+    },
     "OPERADOR": {
         "dashboard": True, "filters": True, "imports": True, "main_table": True,
         "new_laudo": True, "generated_folder": True, "auto_process": True,
@@ -772,6 +795,15 @@ def config_user_save(request: Request, payload: dict = Body(...)):
     if not email:
         raise HTTPException(400, "E-mail é obrigatório para usuários com login online.")
     existing_profile = get_app_user(int(user_id)) if user_id else None
+    if existing_profile:
+        _guard_master_target(request, existing_profile)
+        if _is_master_profile(existing_profile):
+            # A conta MASTER pode editar dados descritivos, mas nunca perder
+            # o e-mail principal, o perfil ADMIN ou o vínculo de system admin.
+            data["email"] = MASTER_EMAIL
+            data["perfil"] = "ADMIN"
+            data["is_system_admin"] = True
+            email = MASTER_EMAIL
     auth_user_id = clean((existing_profile or {}).get("auth_user_id"))
     created_auth_id = ""
     reset_sent = False
@@ -843,6 +875,7 @@ def config_user_suspend(user_id: int, request: Request, payload: dict = Body(...
     row = get_app_user(user_id)
     if not row:
         raise HTTPException(404, "Usuário não encontrado.")
+    _guard_master_target(request, row)
     suspended = bool(payload.get("suspended", True))
     auth_user_id = clean(row.get("auth_user_id"))
     try:
@@ -863,6 +896,7 @@ def config_user_reset_password(user_id: int, request: Request):
     row = get_app_user(user_id)
     if not row:
         raise HTTPException(404, "Usuário não encontrado.")
+    _guard_master_target(request, row)
     email = clean(row.get("email"))
     if not email:
         raise HTTPException(400, "Este usuário não possui e-mail cadastrado.")
@@ -880,6 +914,7 @@ def config_user_delete(user_id: int, request: Request):
     row = get_app_user(user_id)
     if not row:
         raise HTTPException(404, "Usuário não encontrado.")
+    _guard_master_target(request, row)
     auth_user_id = clean(row.get("auth_user_id"))
     try:
         if auth_user_id and auth_service.admin_configured():
@@ -1025,13 +1060,15 @@ def panel_permissions_save(request: Request, payload: dict = Body(...)):
 
 @app.get("/api/panel/user-permissions")
 def panel_user_permissions_get(request: Request, profile_id: int):
-    _require_admin(request)
+    actor = _require_admin(request)
     target = get_app_user(int(profile_id))
     if not target:
         raise HTTPException(404, "Usuário não encontrado.")
     role = clean(target.get("perfil")).upper().replace("FUNÇÃO", "FUNCAO")
-    if role == "ADMIN" or bool(target.get("is_system_admin")):
-        raise HTTPException(400, "As permissões individuais são destinadas a OPERADOR e FUNÇÃO.")
+    if _is_master_profile(target):
+        raise HTTPException(400, "O ADMIN MASTER possui acesso total e não pode ser limitado.")
+    if role == "ADMIN" and not _is_master_profile(actor):
+        raise HTTPException(403, "Somente o ADMIN MASTER pode limitar outro usuário ADMIN.")
     raw = _panel_user_visibility_map()
     overrides = raw.get(str(int(profile_id)), {}) if isinstance(raw.get(str(int(profile_id))), dict) else {}
     return {"ok": True, "profile": _profile_public(target), "overrides": overrides, "effective_visibility": _effective_panel_visibility(target)}
@@ -1039,14 +1076,16 @@ def panel_user_permissions_get(request: Request, profile_id: int):
 
 @app.post("/api/panel/user-permissions")
 def panel_user_permissions_save(request: Request, payload: dict = Body(...)):
-    _require_admin(request)
+    actor = _require_admin(request)
     profile_id = int(payload.get("profile_id") or 0)
     target = get_app_user(profile_id)
     if not target:
         raise HTTPException(404, "Usuário não encontrado.")
     role = clean(target.get("perfil")).upper().replace("FUNÇÃO", "FUNCAO")
-    if role == "ADMIN" or bool(target.get("is_system_admin")):
-        raise HTTPException(400, "Não é possível limitar individualmente um ADMIN por esta tela.")
+    if _is_master_profile(target):
+        raise HTTPException(400, "O ADMIN MASTER possui acesso total e não pode ser limitado.")
+    if role == "ADMIN" and not _is_master_profile(actor):
+        raise HTTPException(403, "Somente o ADMIN MASTER pode limitar outro usuário ADMIN.")
     allowed = set((PANEL_VISIBILITY_DEFAULTS.get(role) or {}).keys())
     incoming = payload.get("permissions") if isinstance(payload.get("permissions"), dict) else {}
     cleaned = {key: bool(value) for key, value in incoming.items() if key in allowed}
@@ -1214,6 +1253,35 @@ def panel_assignment_permanent_delete(assignment_id: int, request: Request, payl
     return {"ok": True, "item": removed}
 
 
+
+@app.post("/api/panel/documents/upsert")
+def panel_document_upsert(request: Request, payload: dict = Body(...)):
+    profile = _require_roles(request, "ADMIN", "OPERADOR")
+    raw = clean(payload.get("pdf_base64"))
+    try:
+        pdf_bytes = base64.b64decode(raw, validate=True)
+    except Exception:
+        raise HTTPException(400, "PDF inválido.")
+    source_local_id = int(payload.get("source_local_id") or 0) or None
+    document_uid = clean(payload.get("document_uid")) or f"panel-{int(profile.get('id') or 0)}-{int(source_local_id or 0)}"
+    try:
+        item = upsert_panel_created_assignment(
+            pdf_bytes=pdf_bytes,
+            filename=clean(payload.get("filename")) or "LAUDO.pdf",
+            numero_laudo=clean(payload.get("numero_laudo")),
+            numero_serie=clean(payload.get("numero_serie")),
+            creator_profile_id=int(profile.get("id") or 0),
+            source_local_id=source_local_id,
+            source_record_id=int(payload.get("source_record_id")) if str(payload.get("source_record_id") or "").isdigit() else None,
+            metadata_json=dict(payload.get("metadata") or {}),
+            document_uid=document_uid,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    _audit(request, "SINCRONIZOU_LAUDO_CRIADO", entity_type="LAUDO_PAINEL", entity_id=item.get("id"), numero_laudo=item.get("numero_laudo") or "", details={"arquivo": item.get("filename"), "document_uid": document_uid})
+    return {"ok": True, "item": item}
+
+
 @app.post("/api/panel/send")
 def panel_send(request: Request, payload: dict = Body(...)):
     profile = _require_roles(request, "ADMIN", "OPERADOR")
@@ -1339,7 +1407,7 @@ def panel_assignment_downloaded(assignment_id: int, request: Request, payload: d
         raise HTTPException(400, "Sem nota AR, informe uma observação breve explicando o motivo.")
 
     updated = update_panel_assignment(
-        assignment_id, status=STATUS_BAIXADO,
+        assignment_id, status=STATUS_BAIXADO, downloaded_by_profile_id=int(profile.get("id") or 0),
         nota_fs=nota_fs, nota_av=nota_av, observacao_av=observacao_av,
         nota_ar=nota_ar, observacao_ar=observacao_ar,
     )
@@ -1371,6 +1439,7 @@ def panel_assignment_return(assignment_id: int, request: Request, payload: dict 
     updated = update_panel_assignment(
         assignment_id, status=STATUS_CORRECAO_PDF, assigned_to_profile_id=target_id, correction_message=reason,
         correction_requested_by_profile_id=requester_id or None, reset_correction_notification=True, reset_correction_progress=True,
+        increment_correction_count=True,
     )
     _audit(request, "DEVOLVEU_PARA_CORRECAO_PDF", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "", details={"motivo": reason, "destino_id": target_id, "destino_nome": target.get("nome"), "solicitante_correcao_id": requester_id})
     return {"ok": True, "item": updated, "target": _profile_public(target)}
@@ -1451,6 +1520,51 @@ def panel_assignment_resend(assignment_id: int, request: Request, payload: dict 
     requester_id = int(item.get("correction_requested_by_profile_id") or 0)
     _audit(request, "REENVIOU_PARA_FUNCAO", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=(updated or item).get("numero_laudo") or "", details={"destino_id": target_id, "destino_nome": target.get("nome"), "prioridade_solicitante_correcao": bool(requester_id and requester_id == target_id), "solicitante_correcao_id": requester_id})
     return {"ok": True, "item": updated, "target": _profile_public(target)}
+
+
+
+@app.get("/api/panel/admin/metrics")
+def panel_admin_metrics(request: Request):
+    profile = _require_admin(request)
+    items = list_panel_assignments(profile_id=int(profile.get("id") or 0), role="ADMIN", limit=2000, include_trashed=False)
+    totals = {
+        "total": len(items),
+        "created": sum(1 for x in items if clean(x.get("status")).upper() == STATUS_CRIADO),
+        "waiting": sum(1 for x in items if clean(x.get("status")).upper() == STATUS_AGUARDANDO_BAIXA),
+        "downloaded": sum(1 for x in items if clean(x.get("status")).upper() == STATUS_BAIXADO),
+        "correction": sum(1 for x in items if clean(x.get("status")).upper() == STATUS_CORRECAO_PDF),
+        "correction_events": sum(int(x.get("correction_count") or 0) for x in items),
+    }
+    creators: dict[int, dict] = {}
+    downloaders: dict[int, dict] = {}
+    errors: dict[int, dict] = {}
+    for item in items:
+        owner = item.get("owner") if isinstance(item.get("owner"), dict) else {}
+        oid = int(item.get("owner_profile_id") or 0)
+        if oid:
+            row = creators.setdefault(oid, {"profile_id": oid, "nome": owner.get("nome") or owner.get("email") or f"Usuário {oid}", "email": owner.get("email") or "", "total": 0, "baixados": 0, "correcoes": 0})
+            row["total"] += 1
+            if clean(item.get("status")).upper() == STATUS_BAIXADO:
+                row["baixados"] += 1
+            cc = int(item.get("correction_count") or 0)
+            row["correcoes"] += cc
+            if cc:
+                er = errors.setdefault(oid, {"profile_id": oid, "nome": row["nome"], "email": row["email"], "correcoes": 0, "laudos_com_erro": 0})
+                er["correcoes"] += cc
+                er["laudos_com_erro"] += 1
+        downloader = item.get("downloaded_by") if isinstance(item.get("downloaded_by"), dict) else {}
+        did = int(item.get("downloaded_by_profile_id") or 0)
+        if did:
+            row = downloaders.setdefault(did, {"profile_id": did, "nome": downloader.get("nome") or downloader.get("email") or f"Usuário {did}", "email": downloader.get("email") or "", "total": 0})
+            row["total"] += 1
+    return {
+        "ok": True,
+        "totals": totals,
+        "by_creator": sorted(creators.values(), key=lambda x: (-int(x["total"]), str(x["nome"]).lower())),
+        "by_downloader": sorted(downloaders.values(), key=lambda x: (-int(x["total"]), str(x["nome"]).lower())),
+        "by_errors": sorted(errors.values(), key=lambda x: (-int(x["correcoes"]), str(x["nome"]).lower())),
+        "current_user": _profile_public(profile),
+    }
 
 
 @app.post("/api/audit/log")

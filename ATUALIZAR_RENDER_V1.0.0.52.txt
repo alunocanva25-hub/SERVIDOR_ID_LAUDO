@@ -1,0 +1,14 @@
+SERVIDOR ID LAUDO — V1.0.0.52
+
+Atualizar primeiro no Render.
+
+Principais mudanças:
+- centraliza laudos criados no painel antes do envio;
+- registra quem criou e quem realizou CONFERIDO/BAIXADO;
+- contabiliza retornos para correção;
+- fornece indicadores globais ao ADMIN;
+- MASTER pode administrar ADMINs secundários e seus limites;
+- ADMIN secundário nunca pode alterar a conta MASTER;
+- reenvio por ADMIN preserva o criador original do laudo.
+
+Depois usar o Painel V1.0.0.94.

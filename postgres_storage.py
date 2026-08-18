@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.51"
+APP_VERSION = "1.0.0.52"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -156,6 +156,8 @@ panel_assignments = Table(
     Column("sent_at", DateTime(timezone=True), nullable=True),
     Column("received_at", DateTime(timezone=True), nullable=True),
     Column("downloaded_at", DateTime(timezone=True), nullable=True),
+    Column("downloaded_by_profile_id", Integer, nullable=True),
+    Column("correction_count", Integer, nullable=False, default=0),
     Column("trashed_at", DateTime(timezone=True), nullable=True),
     Column("trashed_by_profile_id", Integer, nullable=True),
 )
@@ -285,6 +287,9 @@ def _ensure_online_migrations() -> None:
         # V51: Lixeira central e tombstones de exclusão permanente.
         con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS trashed_at timestamptz"))
         con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS trashed_by_profile_id integer"))
+        # V52: rastreia quem concluiu a baixa e quantas devoluções/correções ocorreram.
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS downloaded_by_profile_id integer"))
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS correction_count integer NOT NULL DEFAULT 0"))
         con.execute(text("""
             CREATE TABLE IF NOT EXISTS public.panel_assignment_tombstones(
                 assignment_id integer PRIMARY KEY,
@@ -1043,16 +1048,83 @@ def create_panel_assignment(*, pdf_bytes: bytes, filename: str, numero_laudo: st
         assigned_by_profile_id=int(assigned_by_profile_id), owner_profile_id=int(owner_profile_id or assigned_by_profile_id),
         correction_requested_by_profile_id=None, correction_notification_dismissed_at=None,
         correction_completed_at=None, correction_reviewed_at=None, correction_message='', metadata_json=dict(metadata_json or {}), updated_at=now, sent_at=now, received_at=None, downloaded_at=None,
+        downloaded_by_profile_id=None, correction_count=0,
         trashed_at=None, trashed_by_profile_id=None,
     )
     with engine.begin() as con:
         existing=con.execute(select(panel_assignments).where(panel_assignments.c.document_uid==uid)).first()
         if existing:
-            con.execute(update(panel_assignments).where(panel_assignments.c.id==int(existing._mapping['id'])).values(**values))
-            rid=int(existing._mapping['id'])
+            # Se o ADMIN reencaminhar um laudo criado por OPERADOR, o criador real
+            # continua sendo o owner original. Correções acumuladas também não zeram.
+            previous=dict(existing._mapping)
+            values['owner_profile_id']=int(previous.get('owner_profile_id') or owner_profile_id or assigned_by_profile_id)
+            values['correction_count']=int(previous.get('correction_count') or 0)
+            con.execute(update(panel_assignments).where(panel_assignments.c.id==int(previous['id'])).values(**values))
+            rid=int(previous['id'])
         else:
             rid=int(con.execute(insert(panel_assignments).values(created_at=now, **values).returning(panel_assignments.c.id)).scalar_one())
         row=con.execute(select(panel_assignments).where(panel_assignments.c.id==rid)).first()
+    return _assignment_public(dict(row._mapping))
+
+
+def upsert_panel_created_assignment(*, pdf_bytes: bytes, filename: str, numero_laudo: str, numero_serie: str,
+                                    creator_profile_id: int, source_local_id: int | None = None,
+                                    source_record_id: int | None = None, metadata_json: dict | None = None,
+                                    document_uid: str = '') -> dict:
+    """Registra no servidor um laudo criado no painel antes de ele ser enviado.
+
+    O mesmo registro vira AGUARDANDO_BAIXA quando ADMIN/OPERADOR o encaminha,
+    preservando criador, histórico e PDF em uma única linha central.
+    """
+    import hashlib
+    ensure_db()
+    data = bytes(pdf_bytes or b'')
+    if not data or not data.startswith(b'%PDF'):
+        raise ValueError('O arquivo enviado não é um PDF válido.')
+    creator_profile_id = int(creator_profile_id or 0)
+    if not creator_profile_id:
+        raise ValueError('Criador do laudo não informado.')
+    uid = str(document_uid or '').strip()
+    if not uid:
+        uid = f"panel-{creator_profile_id}-{int(source_local_id or 0)}"
+    now = now_dt()
+    sha = hashlib.sha256(data).hexdigest()
+    base_values = dict(
+        source_record_id=int(source_record_id) if source_record_id else None,
+        source_local_id=int(source_local_id) if source_local_id else None,
+        numero_laudo=str(numero_laudo or '').strip(),
+        numero_serie=str(numero_serie or '').strip(),
+        filename=str(filename or 'LAUDO.pdf').strip()[:260],
+        pdf_data=data, pdf_size=len(data), pdf_sha256=sha,
+        metadata_json=dict(metadata_json or {}),
+        updated_at=now,
+        trashed_at=None, trashed_by_profile_id=None,
+    )
+    with engine.begin() as con:
+        existing = con.execute(select(panel_assignments).where(panel_assignments.c.document_uid == uid)).first()
+        if existing:
+            rid = int(existing._mapping['id'])
+            # Atualiza o conteúdo sem quebrar um fluxo já enviado/baixado.
+            con.execute(update(panel_assignments).where(panel_assignments.c.id == rid).values(**base_values))
+        else:
+            rid = int(con.execute(insert(panel_assignments).values(
+                document_uid=uid,
+                status=STATUS_CRIADO,
+                assigned_to_profile_id=creator_profile_id,
+                assigned_by_profile_id=creator_profile_id,
+                owner_profile_id=creator_profile_id,
+                correction_requested_by_profile_id=None,
+                correction_notification_dismissed_at=None,
+                correction_completed_at=None,
+                correction_reviewed_at=None,
+                correction_message='',
+                nota_fs='', nota_av='', observacao_av='', nota_ar='', observacao_ar='',
+                sent_at=None, received_at=None, downloaded_at=None,
+                downloaded_by_profile_id=None, correction_count=0,
+                created_at=now,
+                **base_values,
+            ).returning(panel_assignments.c.id)).scalar_one())
+        row = con.execute(select(panel_assignments).where(panel_assignments.c.id == rid)).first()
     return _assignment_public(dict(row._mapping))
 
 def get_panel_assignment(assignment_id: int) -> dict | None:
@@ -1082,6 +1154,7 @@ def list_panel_assignments(*, profile_id: int, role: str, limit: int = 500, incl
         d['assigned_by']=users.get(int(d.get('assigned_by_profile_id') or 0),{})
         d['owner']=users.get(int(d.get('owner_profile_id') or 0),{})
         d['correction_requested_by']=users.get(int(d.get('correction_requested_by_profile_id') or 0),{})
+        d['downloaded_by']=users.get(int(d.get('downloaded_by_profile_id') or 0),{})
         out.append(d)
     return out
 
@@ -1147,7 +1220,8 @@ def update_panel_assignment(assignment_id: int, *, status: str | None = None, as
                             correction_requested_by_profile_id: int | None = None,
                             reset_correction_notification: bool = False, dismiss_correction_notification: bool = False,
                             mark_correction_completed: bool = False, mark_correction_reviewed: bool = False,
-                            reset_correction_progress: bool = False,
+                            reset_correction_progress: bool = False, downloaded_by_profile_id: int | None = None,
+                            increment_correction_count: bool = False,
                             nota_fs: str | None = None, nota_av: str | None = None, observacao_av: str | None = None,
                             nota_ar: str | None = None, observacao_ar: str | None = None) -> dict | None:
     import hashlib
@@ -1164,6 +1238,11 @@ def update_panel_assignment(assignment_id: int, *, status: str | None = None, as
         values['correction_completed_at']=now; values['correction_reviewed_at']=None
     if mark_correction_reviewed:
         values['correction_reviewed_at']=now
+    if downloaded_by_profile_id is not None:
+        values['downloaded_by_profile_id']=int(downloaded_by_profile_id)
+    if increment_correction_count:
+        # incrementado atomicamente abaixo, pois depende do valor atual.
+        pass
     if correction_message is not None: values['correction_message']=str(correction_message or '').strip()
     if nota_fs is not None: values['nota_fs']=str(nota_fs or '').strip()[:180]
     if nota_av is not None: values['nota_av']=str(nota_av or '').strip()[:180]
@@ -1187,6 +1266,11 @@ def update_panel_assignment(assignment_id: int, *, status: str | None = None, as
         values.update(pdf_data=data,pdf_size=len(data),pdf_sha256=hashlib.sha256(data).hexdigest())
     if filename is not None: values['filename']=str(filename or 'LAUDO.pdf').strip()[:260]
     with engine.begin() as con:
+        if increment_correction_count:
+            current_count = con.execute(select(panel_assignments.c.correction_count).where(panel_assignments.c.id==int(assignment_id))).scalar_one_or_none()
+            if current_count is None:
+                return None
+            values['correction_count'] = int(current_count or 0) + 1
         result=con.execute(update(panel_assignments).where(panel_assignments.c.id==int(assignment_id)).values(**values))
         if not result.rowcount: return None
         row=con.execute(select(panel_assignments).where(panel_assignments.c.id==int(assignment_id))).first()

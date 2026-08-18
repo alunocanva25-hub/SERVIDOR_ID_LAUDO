@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.51"
+APP_VERSION = "1.0.0.52"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -469,7 +469,7 @@ def create_panel_assignment(**kwargs):
     raise ValueError("Distribuição de laudos exige o backend PostgreSQL online.")
 
 def get_panel_assignment(assignment_id): return None
-def list_panel_assignments(*, profile_id, role, limit=500): return []
+def list_panel_assignments(*, profile_id, role, limit=500, include_trashed=False): return []
 def update_panel_assignment(assignment_id, **kwargs): return None
 def add_audit_event(profile, action, **kwargs):
     return {"id":0,"action":str(action or ""),"created_at":now_iso() if "now_iso" in globals() else datetime.now().isoformat(timespec="seconds")}
@@ -482,3 +482,8 @@ def list_panel_deleted_ids(*, profile_id, role, limit=2000): return []
 def trash_panel_assignment(assignment_id, *, deleted_by_profile_id): return None
 def restore_panel_assignment(assignment_id): return None
 def purge_panel_assignment(assignment_id, *, deleted_by_profile_id): return None
+
+
+# V52 — sincronização de laudos criados antes do envio.
+def upsert_panel_created_assignment(**kwargs):
+    raise ValueError("Sincronização central de laudos exige o backend PostgreSQL online.")
