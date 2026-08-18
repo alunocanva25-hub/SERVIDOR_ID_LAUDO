@@ -1,0 +1,7 @@
+SERVIDOR ID LAUDO — V1.0.0.51
+
+- Lixeira central para panel_assignments.
+- Tombstones para sincronizar exclusão permanente entre computadores/perfis.
+- Exclusão/restauração exigem senha MASTER + @del.
+- Ao excluir um laudo do fluxo, notificações antigas relacionadas são arquivadas.
+- /api/panel/inbox informa trashed_ids e deleted_ids para sincronização local.

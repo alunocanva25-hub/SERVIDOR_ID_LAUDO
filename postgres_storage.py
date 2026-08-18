@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.50"
+APP_VERSION = "1.0.0.51"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -156,6 +156,19 @@ panel_assignments = Table(
     Column("sent_at", DateTime(timezone=True), nullable=True),
     Column("received_at", DateTime(timezone=True), nullable=True),
     Column("downloaded_at", DateTime(timezone=True), nullable=True),
+    Column("trashed_at", DateTime(timezone=True), nullable=True),
+    Column("trashed_by_profile_id", Integer, nullable=True),
+)
+
+panel_assignment_tombstones = Table(
+    "panel_assignment_tombstones", metadata,
+    Column("assignment_id", Integer, primary_key=True),
+    Column("document_uid", String(64), nullable=False, default=""),
+    Column("assigned_to_profile_id", Integer, nullable=True),
+    Column("assigned_by_profile_id", Integer, nullable=True),
+    Column("owner_profile_id", Integer, nullable=True),
+    Column("deleted_by_profile_id", Integer, nullable=True),
+    Column("deleted_at", DateTime(timezone=True), nullable=False),
 )
 
 audit_events = Table(
@@ -269,6 +282,21 @@ def _ensure_online_migrations() -> None:
         # V50: correção precisa ser salva e depois realmente reaberta antes do reenvio.
         con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS correction_completed_at timestamptz"))
         con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS correction_reviewed_at timestamptz"))
+        # V51: Lixeira central e tombstones de exclusão permanente.
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS trashed_at timestamptz"))
+        con.execute(text("ALTER TABLE public.panel_assignments ADD COLUMN IF NOT EXISTS trashed_by_profile_id integer"))
+        con.execute(text("""
+            CREATE TABLE IF NOT EXISTS public.panel_assignment_tombstones(
+                assignment_id integer PRIMARY KEY,
+                document_uid varchar(64) NOT NULL DEFAULT '',
+                assigned_to_profile_id integer,
+                assigned_by_profile_id integer,
+                owner_profile_id integer,
+                deleted_by_profile_id integer,
+                deleted_at timestamptz NOT NULL
+            )
+        """))
+        con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_trash ON public.panel_assignments (trashed_at)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_target_status ON public.panel_assignments (assigned_to_profile_id,status)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_correction_requester ON public.panel_assignments (correction_requested_by_profile_id)"))
         con.execute(text("CREATE INDEX IF NOT EXISTS ix_panel_assignments_owner ON public.panel_assignments (owner_profile_id)"))
@@ -990,7 +1018,7 @@ def _assignment_public(d: dict, *, include_pdf: bool = False) -> dict:
     out=dict(d or {})
     if not include_pdf:
         out.pop('pdf_data', None)
-    for k in ('created_at','updated_at','sent_at','received_at','downloaded_at','correction_notification_dismissed_at','correction_completed_at','correction_reviewed_at'):
+    for k in ('created_at','updated_at','sent_at','received_at','downloaded_at','correction_notification_dismissed_at','correction_completed_at','correction_reviewed_at','trashed_at'):
         if isinstance(out.get(k), datetime): out[k]=out[k].isoformat(timespec='seconds')
     return out
 
@@ -1015,6 +1043,7 @@ def create_panel_assignment(*, pdf_bytes: bytes, filename: str, numero_laudo: st
         assigned_by_profile_id=int(assigned_by_profile_id), owner_profile_id=int(owner_profile_id or assigned_by_profile_id),
         correction_requested_by_profile_id=None, correction_notification_dismissed_at=None,
         correction_completed_at=None, correction_reviewed_at=None, correction_message='', metadata_json=dict(metadata_json or {}), updated_at=now, sent_at=now, received_at=None, downloaded_at=None,
+        trashed_at=None, trashed_by_profile_id=None,
     )
     with engine.begin() as con:
         existing=con.execute(select(panel_assignments).where(panel_assignments.c.document_uid==uid)).first()
@@ -1032,10 +1061,12 @@ def get_panel_assignment(assignment_id: int) -> dict | None:
         row=con.execute(select(panel_assignments).where(panel_assignments.c.id==int(assignment_id))).first()
     return _assignment_public(dict(row._mapping), include_pdf=True) if row else None
 
-def list_panel_assignments(*, profile_id: int, role: str, limit: int = 500) -> list[dict]:
+def list_panel_assignments(*, profile_id: int, role: str, limit: int = 500, include_trashed: bool = False) -> list[dict]:
     ensure_db()
     role=str(role or '').strip().upper()
     stmt=select(panel_assignments).order_by(desc(panel_assignments.c.updated_at)).limit(max(1,min(2000,int(limit or 500))))
+    if not include_trashed:
+        stmt=stmt.where(panel_assignments.c.trashed_at.is_(None))
     if role=='FUNCAO':
         stmt=stmt.where(panel_assignments.c.assigned_to_profile_id==int(profile_id))
     elif role=='OPERADOR':
@@ -1053,6 +1084,62 @@ def list_panel_assignments(*, profile_id: int, role: str, limit: int = 500) -> l
         d['correction_requested_by']=users.get(int(d.get('correction_requested_by_profile_id') or 0),{})
         out.append(d)
     return out
+
+def list_panel_deleted_ids(*, profile_id: int, role: str, limit: int = 2000) -> list[int]:
+    """IDs permanentemente excluídos que devem sumir também dos painéis locais."""
+    ensure_db(); role=str(role or '').strip().upper(); pid=int(profile_id or 0)
+    stmt=select(panel_assignment_tombstones).order_by(desc(panel_assignment_tombstones.c.deleted_at)).limit(max(1,min(5000,int(limit or 2000))))
+    if role=='FUNCAO':
+        stmt=stmt.where(panel_assignment_tombstones.c.assigned_to_profile_id==pid)
+    elif role=='OPERADOR':
+        stmt=stmt.where((panel_assignment_tombstones.c.assigned_to_profile_id==pid) | (panel_assignment_tombstones.c.assigned_by_profile_id==pid) | (panel_assignment_tombstones.c.owner_profile_id==pid))
+    with engine.connect() as con:
+        rows=con.execute(stmt).all()
+    return [int(r._mapping['assignment_id']) for r in rows]
+
+
+def trash_panel_assignment(assignment_id: int, *, deleted_by_profile_id: int) -> dict | None:
+    ensure_db(); now=now_dt()
+    with engine.begin() as con:
+        row=con.execute(select(panel_assignments).where(panel_assignments.c.id==int(assignment_id))).first()
+        if not row: return None
+        con.execute(update(panel_assignments).where(panel_assignments.c.id==int(assignment_id)).values(
+            trashed_at=now, trashed_by_profile_id=int(deleted_by_profile_id or 0) or None, updated_at=now
+        ))
+        saved=con.execute(select(panel_assignments).where(panel_assignments.c.id==int(assignment_id))).first()
+    return _assignment_public(dict(saved._mapping)) if saved else None
+
+
+def restore_panel_assignment(assignment_id: int) -> dict | None:
+    ensure_db(); now=now_dt()
+    with engine.begin() as con:
+        result=con.execute(update(panel_assignments).where(panel_assignments.c.id==int(assignment_id)).values(
+            trashed_at=None, trashed_by_profile_id=None, updated_at=now
+        ))
+        if not result.rowcount: return None
+        row=con.execute(select(panel_assignments).where(panel_assignments.c.id==int(assignment_id))).first()
+    return _assignment_public(dict(row._mapping)) if row else None
+
+
+def purge_panel_assignment(assignment_id: int, *, deleted_by_profile_id: int) -> dict | None:
+    """Exclui definitivamente e mantém somente um tombstone mínimo para sincronizar outros PCs."""
+    ensure_db(); now=now_dt()
+    with engine.begin() as con:
+        row=con.execute(select(panel_assignments).where(panel_assignments.c.id==int(assignment_id))).first()
+        if not row: return None
+        d=dict(row._mapping)
+        values=dict(
+            assignment_id=int(d.get('id') or assignment_id), document_uid=str(d.get('document_uid') or ''),
+            assigned_to_profile_id=d.get('assigned_to_profile_id'), assigned_by_profile_id=d.get('assigned_by_profile_id'),
+            owner_profile_id=d.get('owner_profile_id'), deleted_by_profile_id=int(deleted_by_profile_id or 0) or None, deleted_at=now,
+        )
+        update_values={k:v for k,v in values.items() if k!='assignment_id'}
+        con.execute(pg_insert(panel_assignment_tombstones).values(**values).on_conflict_do_update(
+            index_elements=[panel_assignment_tombstones.c.assignment_id], set_=update_values
+        ))
+        con.execute(delete(panel_assignments).where(panel_assignments.c.id==int(assignment_id)))
+    return _assignment_public(d)
+
 
 def update_panel_assignment(assignment_id: int, *, status: str | None = None, assigned_to_profile_id: int | None = None,
                             correction_message: str | None = None, pdf_bytes: bytes | None = None, filename: str | None = None,

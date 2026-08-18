@@ -26,6 +26,7 @@ from storage_backend import (
     mark_password_changed, set_app_user_active, require_password_change_by_email,
     archive_notification, archive_notifications_for_record, register_push_device, unregister_push_devices, list_push_tokens_for_record,
     list_panel_users, create_panel_assignment, get_panel_assignment, list_panel_assignments, update_panel_assignment,
+    list_panel_deleted_ids, trash_panel_assignment, restore_panel_assignment, purge_panel_assignment,
     add_audit_event, list_audit_events, clear_audit_events, STATUS_AGUARDANDO_BAIXA, STATUS_BAIXADO, STATUS_CORRECAO_PDF,
 )
 import auth_service
@@ -185,14 +186,14 @@ PANEL_VISIBILITY_DEFAULTS = {
         "dashboard": True, "filters": True, "imports": True, "main_table": True,
         "new_laudo": True, "generated_folder": True, "auto_process": True,
         "download_pdf": True, "notifications": True, "pareceres": True,
-        "ocr_rules": True, "reports": True, "display": True, "send": True,
+        "ocr_rules": True, "reports": True, "display": True, "send": True, "delete_laudos": True,
         "function_workspace": False,
     },
     "FUNCAO": {
         "dashboard": True, "filters": True, "imports": True, "main_table": True,
         "new_laudo": False, "generated_folder": False, "auto_process": False,
         "download_pdf": True, "notifications": True, "pareceres": False,
-        "ocr_rules": False, "reports": False, "display": True, "send": False,
+        "ocr_rules": False, "reports": False, "display": True, "send": False, "delete_laudos": False,
         "function_workspace": False,
     },
 }
@@ -1083,25 +1084,25 @@ def panel_master_password_change(request: Request, payload: dict = Body(...)):
     return {"ok": True}
 
 
+def _verify_delete_authorization(typed: str) -> dict:
+    typed = str(typed or "")
+    if not typed.endswith("@del"):
+        raise HTTPException(401, "Informe a senha MASTER seguida de @del.")
+    password = typed[:-4]
+    if not password:
+        raise HTTPException(401, "Informe a senha MASTER seguida de @del.")
+    if not _verify_master_password(password):
+        raise HTTPException(401, "Senha MASTER inválida para exclusão.")
+    master = _master_profile()
+    if not master or clean(master.get("email")).lower() != MASTER_EMAIL or not bool(master.get("is_system_admin")):
+        raise HTTPException(403, "Conta MASTER principal não encontrada.")
+    return master
+
+
 @app.post("/api/panel/delete-authorize")
 def panel_delete_authorize(request: Request, payload: dict = Body(...)):
     _require_roles(request, "ADMIN", "OPERADOR")
-    typed = str(payload.get("authorization") or "")
-    if not typed.endswith("@del"):
-        raise HTTPException(401, "Autorização de exclusão inválida.")
-    password = typed[:-4]
-    if not password:
-        raise HTTPException(401, "Informe a senha do ADMIN seguida de @del.")
-    try:
-        session = auth_service.sign_in(MASTER_EMAIL, password)
-        token = clean(session.get("access_token"))
-        if not token:
-            raise ValueError()
-        _user, master = _resolve_profile_from_access_token(token)
-        if not bool(master.get("is_system_admin")):
-            raise ValueError()
-    except Exception:
-        raise HTTPException(401, "Senha do ADMIN inválida para exclusão.")
+    _verify_delete_authorization(payload.get("authorization"))
     return {"ok": True}
 
 
@@ -1149,8 +1150,68 @@ def panel_send_targets(request: Request):
 @app.get("/api/panel/inbox")
 def panel_inbox(request: Request, limit: int = 500):
     profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
-    items = list_panel_assignments(profile_id=int(profile.get("id")), role=clean(profile.get("perfil")), limit=limit)
-    return {"ok": True, "items": items, "current_user": _profile_public(profile)}
+    pid = int(profile.get("id") or 0); role = clean(profile.get("perfil"))
+    all_items = list_panel_assignments(profile_id=pid, role=role, limit=max(limit, 2000), include_trashed=True)
+    items = [item for item in all_items if not item.get("trashed_at")][:max(1, min(2000, int(limit or 500)))]
+    trashed_ids = [int(item.get("id")) for item in all_items if item.get("trashed_at") and item.get("id") is not None]
+    deleted_ids = list_panel_deleted_ids(profile_id=pid, role=role, limit=2000)
+    return {"ok": True, "items": items, "trashed_ids": trashed_ids, "deleted_ids": deleted_ids, "current_user": _profile_public(profile)}
+
+
+@app.get("/api/panel/trash")
+def panel_trash(request: Request, limit: int = 1000):
+    profile = _require_roles(request, "ADMIN", "OPERADOR")
+    items = list_panel_assignments(profile_id=int(profile.get("id") or 0), role=clean(profile.get("perfil")), limit=limit, include_trashed=True)
+    trashed = [item for item in items if item.get("trashed_at")]
+    return {"ok": True, "items": trashed, "current_user": _profile_public(profile)}
+
+
+@app.post("/api/panel/assignments/{assignment_id}/trash")
+def panel_assignment_trash(assignment_id: int, request: Request, payload: dict = Body(...)):
+    # A opção pode aparecer também para FUNÇÃO nas notificações, mas a ação
+    # só é efetivada após a senha MASTER + @del.
+    profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
+    _verify_delete_authorization(payload.get("authorization"))
+    item = get_panel_assignment(assignment_id)
+    if not item or not _can_access_assignment(profile, item):
+        raise HTTPException(404, "Laudo não encontrado para exclusão.")
+    updated = trash_panel_assignment(assignment_id, deleted_by_profile_id=int(profile.get("id") or 0))
+    source_record_id = int(item.get("source_record_id") or 0)
+    if source_record_id:
+        try: archive_notifications_for_record(source_record_id)
+        except Exception: pass
+    _audit(request, "MOVEU_LAUDO_PARA_LIXEIRA", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=item.get("numero_laudo") or "")
+    return {"ok": True, "item": updated}
+
+
+@app.post("/api/panel/assignments/{assignment_id}/restore")
+def panel_assignment_restore(assignment_id: int, request: Request, payload: dict = Body(...)):
+    profile = _require_roles(request, "ADMIN", "OPERADOR")
+    _verify_delete_authorization(payload.get("authorization"))
+    item = get_panel_assignment(assignment_id)
+    if not item:
+        raise HTTPException(404, "Laudo não encontrado na lixeira.")
+    updated = restore_panel_assignment(assignment_id)
+    _audit(request, "RESTAUROU_LAUDO_DA_LIXEIRA", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=item.get("numero_laudo") or "")
+    return {"ok": True, "item": updated}
+
+
+@app.delete("/api/panel/assignments/{assignment_id}/permanent")
+def panel_assignment_permanent_delete(assignment_id: int, request: Request, payload: dict = Body(default={})):
+    # Igual à lixeira: perfis não-MASTER podem solicitar pela notificação,
+    # mas precisam que o MASTER autorize digitando sua senha + @del.
+    profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
+    _verify_delete_authorization(payload.get("authorization"))
+    item = get_panel_assignment(assignment_id)
+    if not item or not _can_access_assignment(profile, item):
+        raise HTTPException(404, "Laudo não encontrado para exclusão permanente.")
+    removed = purge_panel_assignment(assignment_id, deleted_by_profile_id=int(profile.get("id") or 0))
+    source_record_id = int(item.get("source_record_id") or 0)
+    if source_record_id:
+        try: archive_notifications_for_record(source_record_id)
+        except Exception: pass
+    _audit(request, "EXCLUIU_LAUDO_PERMANENTE", entity_type="LAUDO_PAINEL", entity_id=assignment_id, numero_laudo=item.get("numero_laudo") or "")
+    return {"ok": True, "item": removed}
 
 
 @app.post("/api/panel/send")

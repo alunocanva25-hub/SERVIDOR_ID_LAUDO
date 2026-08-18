@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.50"
+APP_VERSION = "1.0.0.51"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -475,3 +475,10 @@ def add_audit_event(profile, action, **kwargs):
     return {"id":0,"action":str(action or ""),"created_at":now_iso() if "now_iso" in globals() else datetime.now().isoformat(timespec="seconds")}
 def list_audit_events(*, limit=500, profile_id=None, action="", numero_laudo=""): return []
 def clear_audit_events(): return 0
+
+
+# V51 local/offline compatibility stubs for central trash workflow.
+def list_panel_deleted_ids(*, profile_id, role, limit=2000): return []
+def trash_panel_assignment(assignment_id, *, deleted_by_profile_id): return None
+def restore_panel_assignment(assignment_id): return None
+def purge_panel_assignment(assignment_id, *, deleted_by_profile_id): return None
