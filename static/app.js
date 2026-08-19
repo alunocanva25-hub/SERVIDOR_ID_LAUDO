@@ -14,7 +14,8 @@ const STATUS_META = {
   AGUARDANDO_REVISAO:{label:'Aguardando revisão',cls:'waiting'},
   EM_REVISAO:{label:'Em revisão',cls:'reviewing'},
   DEVOLVIDO:{label:'Correção solicitada',cls:'returned'},
-  LAUDO_CRIADO:{label:'Laudo criado',cls:'created'}
+  LAUDO_CRIADO:{label:'Laudo criado',cls:'created'},
+  BAIXADO:{label:'Baixado',cls:'created'}
 };
 const FLOW_STATUSES=['PRONTO','PRONTO_PARA_ID_CAMPS','AGUARDANDO_REVISAO','EM_REVISAO'];
 const ACTIVE_STATUSES=['RASCUNHO',...FLOW_STATUSES,'DEVOLVIDO'];
@@ -23,6 +24,7 @@ function statusMeta(s){ return STATUS_META[normStatus(s)] || {label:normStatus(s
 let bootstrap = {models:[], observations:[], people:{}, manufacturers:[], counts:{}};
 let selectedObs = [];
 let currentRecordId = null;
+let currentRecordStatus = 'RASCUNHO';
 let currentStep = 0;
 let lastStep = 0;
 let activeMainTab = 'home';
@@ -379,7 +381,7 @@ async function idLaudoBiometricUnlocked(){
     if(!unlockApp('BIOMETRIC'))throw new Error('Não foi possível validar sua conta.');
     if(!appStarted)await startApp();else{await loadAppConfig();await loadRecords();}
     offerNotificationsAfterLogin();setupPushNotifications();
-  }catch(e){showLoginView();showAuthError(e.message||'Não foi possível entrar com biometria.');try{nativeBridge()?.disableBiometric();}catch{}}
+  }catch(e){showLoginView();showAuthError((e.message||'Não foi possível entrar com biometria.')+' A biometria continua ativada; entre com a senha para renovar a sessão.');}
   finally{if(btn){btn.disabled=false;btn.querySelector('span:last-child').textContent='ENTRAR COM BIOMETRIA';}updateBiometricLoginButton();}
 }
 function idLaudoBiometricError(message='Não foi possível validar a biometria.'){
@@ -482,7 +484,13 @@ async function refreshAuthSession(){
   try{
     const r=await publicApi('/api/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:authState.refresh_token})});
     authState={access_token:r.session?.access_token||'',refresh_token:r.session?.refresh_token||authState.refresh_token};currentUser=r.user||currentUser;saveAuthState();return !!authState.access_token;
-  }catch{clearAuthState();return false;}
+  }catch{
+    // V1.0.0.53/V37: uma falha de rede ou sessão vencida não apaga a
+    // preferência de entrada biométrica nem o refresh token armazenado.
+    // Assim a digital pode tentar novamente quando a rede voltar; se o token
+    // tiver sido revogado, o usuário renova o acesso com a senha uma vez.
+    authState.access_token='';currentUser=null;saveAuthState();return false;
+  }
 }
 async function api(url, options={}){
   const headers={...(options.headers||{})};
@@ -781,7 +789,10 @@ async function logoutApp(){
 async function enterWithStoredSession(){
   loadAuthState();if(!authState.access_token&&!authState.refresh_token)return false;
   if(!authState.access_token&&!(await refreshAuthSession()))return false;
-  try{const r=await api('/api/auth/me');currentUser=r.user||null;return !!currentUser;}catch{if(await refreshAuthSession()){try{const r=await api('/api/auth/me');currentUser=r.user||null;return !!currentUser;}catch{}}clearAuthState();return false;}
+  try{const r=await api('/api/auth/me');currentUser=r.user||null;return !!currentUser;}catch{
+    if(await refreshAuthSession()){try{const r=await api('/api/auth/me');currentUser=r.user||null;return !!currentUser;}catch{}}
+    authState.access_token='';currentUser=null;saveAuthState();return false;
+  }
 }
 async function init(){
   authGateState='BOOT';
@@ -1118,7 +1129,7 @@ function hydrate(p){
   selectedObs=[];for(let i=1;i<=4;i++){const code=p[`frase_${i}_codigo`];const text=p[`frase_${i}_texto`];if(code||text){const found=bootstrap.observations.find(x=>String(x.id)===String(code));selectedObs.push(found||{id:code||i,observacao:text||''})}}renderSelectedObs();syncLacragem();syncReactive();updateEnergyResults();
 }
 
-function resetForm(){ clearTimeout(autoSaveTimer);autoSaveTimer=0;$('laudoForm').reset();toiManuallyEdited=false;selectedObs=[];renderSelectedObs();setDefaults();setVal('modelo','');setVal('modeloSearch','');$('modelResults').innerHTML='';$('obsResults').innerHTML='';currentRecordId=null;currentStep=0;setSaveState('RASCUNHO'); }
+function resetForm(){ clearTimeout(autoSaveTimer);autoSaveTimer=0;$('laudoForm').reset();toiManuallyEdited=false;selectedObs=[];renderSelectedObs();setDefaults();setVal('modelo','');setVal('modeloSearch','');$('modelResults').innerHTML='';$('obsResults').innerHTML='';currentRecordId=null;currentRecordStatus='RASCUNHO';currentStep=0;setSaveState('RASCUNHO');syncCorrectionModeUi(); }
 function newLaudo(){ resetForm(); refreshCatalog(true); $('editorStatus').textContent='NOVO ESPELHO';$('editorTitle').textContent='Novo Laudo';updateStepUi(); setEditorMode(true); switchView('editorView',`${activeMainTab}View`,'right'); }
 function backHome(){ flushAutoSave(); setEditorMode(false); switchView(`${activeMainTab}View`,'editorView','left'); setTimeout(loadRecords,180); }
 function exitEditorToLaudos(){
@@ -1140,7 +1151,9 @@ async function saveDraft(silent=false){
   try{
     const r=await api('/api/records/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:currentRecordId,data:collect()})});
     currentRecordId=r.item.id;
+    currentRecordStatus=normStatus(r.item.status);
     $('editorStatus').textContent=statusMeta(r.item.status).label.toUpperCase();
+    syncCorrectionModeUi();
     $('editorTitle').textContent=`${r.item.tipo || 'NR'}-${r.item.numero_laudo || 'SEM Nº'} • ${r.item.instalacao || 'SEM INSTALAÇÃO'}`;
     setSaveState('SALVO','saved');
     if(!silent){
@@ -1151,10 +1164,48 @@ async function saveDraft(silent=false){
   }catch(e){ setSaveState('SEM REDE','error'); if(!silent) modal('Salvar rascunho',e.message); }
   finally{ autoSaving=false; }
 }
+function validateReadyPayload(p){
+  const missing=[];
+  if(!p.numero_laudo)missing.push('Nº do Laudo');
+  if(!p.instalacao)missing.push('Instalação');
+  if(!p.numero_serie)missing.push('Nº do medidor / Série');
+  if(!p.modelo)missing.push('Modelo');
+  if(missing.length){modal('Espelho incompleto',`Preencha antes de enviar:\n• ${missing.join('\n• ')}`);return false;}
+  if(p.lacragem_sim && !lacIds().some(id=>checked(id))){modal('Lacragem','Selecione pelo menos uma opção da integridade dos lacres ou marque a inspeção como NÃO.');return false;}
+  return true;
+}
+function isCorrectionMode(){return normStatus(currentRecordStatus)==='DEVOLVIDO';}
+function syncCorrectionModeUi(){
+  const correction=isCorrectionMode();
+  if($('editorFinishBtn'))$('editorFinishBtn').textContent=correction?'SALVAR CORREÇÃO':'FINALIZAR';
+  if($('finishStepBtn'))$('finishStepBtn').textContent=correction?'SALVAR CORREÇÃO':'FINALIZAR';
+  if($('finishStepTitle'))$('finishStepTitle').textContent=correction?'Correção pronta?':'Pronto para finalizar?';
+  if($('finishStepText'))$('finishStepText').textContent=correction?'Atualiza o mesmo laudo e envia somente uma correção para o ID CAMPS.':'Envia o espelho para revisão no ID CAMPS.';
+}
+async function submitCurrentRecord(){
+  if(isCorrectionMode()) return submitCorrection();
+  return exportBridge();
+}
+async function submitCorrection(){
+  const p=collect();
+  if(!currentRecordId){modal('Correção','Salve o laudo antes de enviar a correção.');return;}
+  if(!validateReadyPayload(p))return;
+  const buttons=[$('editorFinishBtn'),$('finishStepBtn')].filter(Boolean);
+  buttons.forEach(b=>{b.disabled=true;b.textContent='SALVANDO...';});
+  try{
+    const r=await api(`/api/records/${currentRecordId}/corrected`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:p})});
+    currentRecordId=r.record?.id||currentRecordId;
+    currentRecordStatus=normStatus(r.record?.status||'AGUARDANDO_REVISAO');
+    $('editorStatus').textContent='CORRIGIDO • ENVIADO';
+    setSaveState('CORRIGIDO','saved');
+    const msg=r.deduplicated?'Esta correção já havia sido enviada. O mesmo laudo foi mantido sem duplicar.':'Correção salva no mesmo laudo e enviada para revisão sem criar outro registro.';
+    modal('Correção enviada',msg,[['OK','primary',()=>{closeModal();exitEditorToLaudos();}]]);
+  }catch(e){modal('Salvar correção',e.message)}
+  finally{buttons.forEach(b=>{b.disabled=false;});syncCorrectionModeUi();}
+}
 async function exportBridge(){
-  const p=collect();const missing=[];if(!p.numero_laudo)missing.push('Nº do Laudo');if(!p.instalacao)missing.push('Instalação');if(!p.numero_serie)missing.push('Nº do medidor / Série');if(!p.modelo)missing.push('Modelo');if(missing.length){modal('Espelho incompleto',`Preencha antes de finalizar:\n• ${missing.join('\n• ')}`);return;}
-  if(p.lacragem_sim && !lacIds().some(id=>checked(id))){modal('Lacragem','Selecione pelo menos uma opção da integridade dos lacres ou marque a inspeção como NÃO.');return;}
-  try{const r=await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:currentRecordId,data:p})});currentRecordId=r.record.id;const online=r.backend?.mode==='ONLINE';$('editorStatus').textContent=statusMeta(r.record.status).label.toUpperCase();setSaveState(online?'ENVIADO':'LOCAL','saved');const msg=online?`Laudo gravado no Supabase/PostgreSQL e enviado para revisão.\n\nStatus: ${statusMeta(r.record.status).label}\nID: ${r.bridge_id||'—'}`:`O app está em MODO LOCAL. O laudo foi salvo somente neste computador e NÃO foi enviado ao PostgreSQL.\n\nAbra ⚙ Configurações → Servidor → USAR ONLINE.`;modal(online?'Laudo enviado':'Laudo salvo localmente',msg,[['OK','primary',()=>{closeModal();exitEditorToLaudos();}]])}
+  const p=collect();if(!validateReadyPayload(p))return;
+  try{const r=await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:currentRecordId,data:p})});currentRecordId=r.record.id;currentRecordStatus=normStatus(r.record.status);syncCorrectionModeUi();const online=r.backend?.mode==='ONLINE';$('editorStatus').textContent=statusMeta(r.record.status).label.toUpperCase();setSaveState(online?'ENVIADO':'LOCAL','saved');const msg=online?`Laudo gravado no Supabase/PostgreSQL e enviado para revisão.\n\nStatus: ${statusMeta(r.record.status).label}\nID: ${r.bridge_id||'—'}`:`O app está em MODO LOCAL. O laudo foi salvo somente neste computador e NÃO foi enviado ao PostgreSQL.\n\nAbra ⚙ Configurações → Servidor → USAR ONLINE.`;modal(online?'Laudo enviado':'Laudo salvo localmente',msg,[['OK','primary',()=>{closeModal();exitEditorToLaudos();}]])}
   catch(e){modal('Finalizar Espelho',e.message)}
 }
 
@@ -1191,20 +1242,23 @@ function renderLaudos(){
   rows=rows.filter(x=>matchesRecordSearch(x,laudosSearchTerm));
   $('draftsEmpty').classList.toggle('hidden',rows.length>0);
   $('draftsEmpty').textContent=laudosSearchTerm?'Nenhum laudo encontrado para esta pesquisa.':'Nenhum laudo em andamento.';
-  box.innerHTML='';rows.forEach(row=>box.appendChild(makeRecordCard(row)));
+  box.innerHTML='';rows.forEach(row=>box.appendChild(makeRecordCard(row,false)));
 }
-function makeRecordCard(row){
+function makeRecordCard(row,historyMode=false){
   const c=document.createElement('div');
   const meta=statusMeta(row.status);
   const correction=row.status==='DEVOLVIDO';
   const created=row.status==='LAUDO_CRIADO';
+  const completed=created||row.status==='BAIXADO';
   c.className='recordCard '+(correction?'needsCorrection':'');
   const bridge=row.bridge_id?`<div>ID Ponte<strong>${esc(row.bridge_id)}</strong></div>`:'';
   const remote=row.remote_laudo_numero?`<div>Laudo oficial<strong>${esc(row.remote_laudo_numero)}</strong></div>`:'';
   const note=row.status_message?`<div class="recordNotice ${correction?'warnNotice':''}">${esc(row.status_message)}</div>`:'';
-  c.innerHTML=`<div class="recordTop"><b>${esc(row.tipo||'NR')}-${esc(row.numero_laudo||'SEM Nº')} <small>${esc(row.ano||'')}</small></b><span class="badge ${meta.cls}">${esc(meta.label)}</span></div>${note}<div class="recordMeta"><div>Instalação<strong>${esc(row.instalacao||'–')}</strong></div><div>Medidor<strong>${esc(row.numero_serie||'–')}</strong></div><div>Modelo<strong>${esc(row.modelo||'–')}</strong></div><div>Atualizado<strong>${esc(formatDateTime(row.updated_at))}</strong></div>${bridge}${remote}</div><div class="recordActions"><button class="secondary editBtn">${correction?'CORRIGIR':created?'VER':'ABRIR'}</button>${created?'':`<button class="danger delBtn">EXCLUIR</button>`}</div>`;
+  const historyDelete=historyMode&&completed?`<button class="danger historyDelBtn">EXCLUIR DO HISTÓRICO</button>`:(completed?'':`<button class="danger delBtn">EXCLUIR</button>`);
+  c.innerHTML=`<div class="recordTop"><b>${esc(row.tipo||'NR')}-${esc(row.numero_laudo||'SEM Nº')} <small>${esc(row.ano||'')}</small></b><span class="badge ${meta.cls}">${esc(meta.label)}</span></div>${note}<div class="recordMeta"><div>Instalação<strong>${esc(row.instalacao||'–')}</strong></div><div>Medidor<strong>${esc(row.numero_serie||'–')}</strong></div><div>Modelo<strong>${esc(row.modelo||'–')}</strong></div><div>Atualizado<strong>${esc(formatDateTime(row.updated_at))}</strong></div>${bridge}${remote}</div><div class="recordActions"><button class="secondary editBtn">${correction?'CORRIGIR':created?'VER':'ABRIR'}</button>${historyDelete}</div>`;
   c.querySelector('.editBtn').onclick=()=>openRecord(row.id);
   c.querySelector('.delBtn')?.addEventListener('click',()=>confirmBox('Excluir espelho',`Excluir ${row.tipo||'NR'}-${row.numero_laudo||'SEM Nº'} da lista local?`,()=>deleteRecord(row.id)));
+  c.querySelector('.historyDelBtn')?.addEventListener('click',()=>confirmBox('Excluir do histórico',`Remover ${row.tipo||'NR'}-${row.numero_laudo||'SEM Nº'} apenas do Histórico deste usuário? O laudo do Painel não será apagado.`,()=>deleteHistoryRecord(row.id)));
   return c;
 }
 function renderHistory(){
@@ -1217,20 +1271,34 @@ function renderHistory(){
   rows=rows.filter(x=>matchesRecordSearch(x,historySearchTerm));
   $('recordsEmpty').classList.toggle('hidden',rows.length>0);
   $('recordsEmpty').textContent=historySearchTerm?'Nenhum laudo encontrado para esta pesquisa.':'Nenhum laudo encontrado.';
-  box.innerHTML=''; rows.forEach(row=>box.appendChild(makeRecordCard(row)));
+  box.innerHTML=''; rows.forEach(row=>box.appendChild(makeRecordCard(row,true)));
 }
 
 function formatDateTime(v){if(!v)return'–';const d=new Date(v);return Number.isNaN(d.getTime())?v:d.toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'})}
 async function openRecord(id){
   try{
     const r=await api(`/api/records/${id}`); resetForm(); currentRecordId=r.item.id; hydrate(r.item.payload);
-    const meta=statusMeta(r.item.status); $('editorStatus').textContent=meta.label.toUpperCase(); setSaveState('SALVO','saved');
+    currentRecordStatus=normStatus(r.item.status); const meta=statusMeta(r.item.status); $('editorStatus').textContent=meta.label.toUpperCase(); setSaveState('SALVO','saved'); syncCorrectionModeUi();
     $('editorTitle').textContent=`${r.item.tipo||'NR'}-${r.item.numero_laudo||'SEM Nº'} • ${r.item.instalacao||'SEM INSTALAÇÃO'}`;
     if(r.item.status_message && normStatus(r.item.status)==='DEVOLVIDO') toast('Correção solicitada: '+r.item.status_message);
     goStep(0); setEditorMode(true); switchView('editorView',`${activeMainTab}View`,'right');
   }catch(e){modal('Abrir espelho',e.message)}
 }
 async function deleteRecord(id){try{await api(`/api/records/${id}`,{method:'DELETE'});toast('Espelho excluído.');loadRecords()}catch(e){modal('Excluir espelho',e.message)}}
+async function deleteHistoryRecord(id){
+  try{await api(`/api/records/${id}/history`,{method:'DELETE'});toast('Laudo removido do Histórico.');await loadRecords();}
+  catch(e){modal('Excluir do histórico',e.message)}
+}
+async function clearCompletedHistory(){
+  const rows=allRecords.filter(x=>['LAUDO_CRIADO','BAIXADO'].includes(normStatus(x.status)));
+  if(!rows.length){modal('Histórico','Não há laudos concluídos para excluir do Histórico.');return;}
+  confirmBox('Excluir concluídos',`Remover ${rows.length} laudo(s) concluído(s) apenas do Histórico deste usuário? Os laudos do Painel continuarão intactos.`,async()=>{
+    let ok=0,fail=0;
+    for(const row of rows){try{await api(`/api/records/${row.id}/history`,{method:'DELETE'});ok++;}catch{fail++;}}
+    await loadRecords();toast(fail?`${ok} removido(s) • ${fail} não removido(s)`:`${ok} laudo(s) removido(s) do Histórico.`);
+  });
+}
+
 async function openOutbox(){try{const r=await api('/api/open-outbox',{method:'POST'});toast(`Pasta aberta: ${r.path}`)}catch(e){modal('Pasta de envio',e.message)}}
 
 

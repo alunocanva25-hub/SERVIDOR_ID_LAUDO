@@ -7,7 +7,7 @@
   <title>ID LAUDO V1.0.0.37</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/assets/ID_LAUDO.png">
-  <link rel="stylesheet" href="/static/style.css?v=1.0.0.37">
+  <link rel="stylesheet" href="/static/style.css?v=1.0.0.53">
   <script>
     // V34: no link de recuperação, começa a baixar o Supabase JS já no <head>.
     // Isso reduz a espera quando o retorno usa ?code= em vez de #access_token.
@@ -119,13 +119,13 @@
   <section id="historicoView" class="view mainTab hidden">
     <div class="sectionHeader appPanel compact">
       <div><span class="eyebrow">HISTÓRICO</span><h3>Todos os laudos</h3></div>
-      <div class="filterChips">
+      <div class="historyHeaderActions"><button class="secondary miniAction" type="button" onclick="clearCompletedHistory()">EXCLUIR CONCLUÍDOS</button><div class="filterChips">
         <button id="historyAllBtn" class="chip active" type="button" onclick="setHistoryFilter('ALL')">Todos</button>
         <button id="historyDraftBtn" class="chip" type="button" onclick="setHistoryFilter('RASCUNHO')">Rascunhos</button>
         <button id="historySentBtn" class="chip" type="button" onclick="setHistoryFilter('ENVIADOS')">Enviados</button>
         <button id="historyReturnedBtn" class="chip" type="button" onclick="setHistoryFilter('DEVOLVIDO')">Correção</button>
         <button id="historyCreatedBtn" class="chip" type="button" onclick="setHistoryFilter('LAUDO_CRIADO')">Criados</button>
-      </div>
+      </div></div>
     </div>
     <div class="searchBar appPanel"><span class="searchIcon">⌕</span><input id="historySearch" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="Pesquisar nº do laudo ou medidor" oninput="onHistorySearch(this.value)"><button type="button" class="clearSearch hidden" id="historySearchClear" onclick="clearHistorySearch()">×</button></div>
     <div id="recordsEmpty" class="empty">Nenhum laudo encontrado.</div>
@@ -213,7 +213,7 @@
     <div class="editorHeader">
       <button class="back" onclick="backHome()"><span>←</span><strong>Voltar</strong></button>
       <div><div class="editorMeta"><span class="eyebrow" id="editorStatus">NOVO ESPELHO</span><span id="saveState" class="saveState">RASCUNHO</span></div><h2 id="editorTitle">Novo Laudo</h2></div>
-      <div class="editorHeaderActions"><button class="editorTool helpTool" type="button" onclick="showQuickHelp()" aria-label="Ajuda">?</button><button class="editorTool saveTool" type="button" onclick="saveDraft()">SALVAR</button><button class="editorTool finishTool" type="button" onclick="exportBridge()">FINALIZAR</button></div>
+      <div class="editorHeaderActions"><button class="editorTool helpTool" type="button" onclick="showQuickHelp()" aria-label="Ajuda">?</button><button class="editorTool saveTool" type="button" onclick="saveDraft()">SALVAR</button><button id="editorFinishBtn" class="editorTool finishTool" type="button" onclick="submitCurrentRecord()">FINALIZAR</button></div>
     </div>
 
     <div class="stepper" id="stepper"></div>
@@ -374,7 +374,7 @@
           <div id="reviewGrid" class="reviewGrid"></div>
           <div id="reviewWarnings" class="reviewWarnings"></div>
         </div>
-        <div class="finishCard"><div><span class="eyebrow">PONTE ID CAMPS</span><h3>Pronto para finalizar?</h3><p>Envia o espelho para revisão no ID CAMPS.</p></div><button class="primary big" onclick="exportBridge()">FINALIZAR</button></div>
+        <div class="finishCard"><div><span class="eyebrow">PONTE ID CAMPS</span><h3 id="finishStepTitle">Pronto para finalizar?</h3><p id="finishStepText">Envia o espelho para revisão no ID CAMPS.</p></div><button id="finishStepBtn" class="primary big" onclick="submitCurrentRecord()">FINALIZAR</button></div>
       </section>
     </form>
 
@@ -390,6 +390,6 @@
 
 <div id="toast" class="toast"></div>
 <div id="modal" class="modal hidden"><div class="modalBox"><h3 id="modalTitle">Aviso</h3><p id="modalText"></p><div id="modalActions" class="modalActions"></div></div></div>
-<script src="/static/app.js?v=1.0.0.37"></script>
+<script src="/static/app.js?v=1.0.0.53"></script>
 </body>
 </html>

@@ -28,6 +28,7 @@ from storage_backend import (
     list_panel_users, create_panel_assignment, upsert_panel_created_assignment, get_panel_assignment, list_panel_assignments, update_panel_assignment,
     list_panel_deleted_ids, trash_panel_assignment, restore_panel_assignment, purge_panel_assignment,
     add_audit_event, list_audit_events, clear_audit_events, STATUS_AGUARDANDO_BAIXA, STATUS_BAIXADO, STATUS_CORRECAO_PDF,
+    list_record_history_archived_ids, archive_record_history,
 )
 import auth_service
 import push_service
@@ -661,6 +662,155 @@ def auth_logout(request: Request):
     return {"ok": True}
 
 
+
+BUILDER_CATALOG_SETTING_KEY = "builder_catalog_v1"
+BUILDER_SELECTOR_MAP = {
+    "responsavel_ensaio": "tecnico",
+    "equipamento_utilizado": "equipamento",
+    "tecnico_assinatura": "tecnico_assinatura",
+    "responsavel_tecnico": "responsavel_tecnico",
+    "digitador": "digitador",
+}
+
+
+def _central_builder_catalog() -> dict:
+    raw = get_app_setting(BUILDER_CATALOG_SETTING_KEY, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    selectors = raw.get("selectors") if isinstance(raw.get("selectors"), dict) else {}
+    hidden = raw.get("hidden") if isinstance(raw.get("hidden"), dict) else {}
+    models = raw.get("models") if isinstance(raw.get("models"), list) else []
+    phrases = raw.get("phrases") if isinstance(raw.get("phrases"), list) else []
+    portarias = raw.get("portarias") if isinstance(raw.get("portarias"), list) else []
+    resolved_raw = raw.get("resolved") if isinstance(raw.get("resolved"), dict) else {}
+    resolved = {
+        "models": [dict(x) for x in (resolved_raw.get("models") or []) if isinstance(x, dict)],
+        "people": {str(k): [clean(v) for v in vals if clean(v)] for k, vals in (resolved_raw.get("people") or {}).items() if isinstance(vals, list)},
+        "manufacturers": [clean(v) for v in (resolved_raw.get("manufacturers") or []) if clean(v)],
+        "observations": [dict(x) for x in (resolved_raw.get("observations") or []) if isinstance(x, dict)],
+        "portarias": [clean(v) for v in (resolved_raw.get("portarias") or []) if clean(v)],
+    }
+    return {
+        "selectors": {str(k): [clean(v) for v in vals if clean(v)] for k, vals in selectors.items() if isinstance(vals, list)},
+        "hidden": {str(k): [clean(v) for v in vals if clean(v)] for k, vals in hidden.items() if isinstance(vals, list)},
+        "models": [dict(x) for x in models if isinstance(x, dict)],
+        "phrases": [dict(x) for x in phrases if isinstance(x, dict)],
+        "portarias": [dict(x) for x in portarias if isinstance(x, dict)],
+        "resolved": resolved,
+        "updated_at": clean(raw.get("updated_at")),
+    }
+
+
+def _save_central_builder_catalog(payload: dict) -> dict:
+    data = {
+        "selectors": dict(payload.get("selectors") or {}),
+        "hidden": dict(payload.get("hidden") or {}),
+        "models": list(payload.get("models") or []),
+        "phrases": list(payload.get("phrases") or []),
+        "portarias": list(payload.get("portarias") or []),
+        "resolved": dict(payload.get("resolved") or {}),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    set_app_setting(BUILDER_CATALOG_SETTING_KEY, data)
+    return _central_builder_catalog()
+
+
+def _merge_bootstrap_with_central(models: list[dict], observations: list[dict], portarias: list[str], people: dict, manufacturers: list[str]):
+    central = _central_builder_catalog()
+    resolved = central.get("resolved") if isinstance(central.get("resolved"), dict) else {}
+    if resolved.get("models") or resolved.get("people") or resolved.get("manufacturers") or resolved.get("observations"):
+        # Quando o Painel já enviou um snapshot resolvido, esta é a fonte
+        # autoritativa do cadastro. APP e Painel passam a enxergar a mesma base.
+        r_models = [dict(x) for x in (resolved.get("models") or []) if isinstance(x, dict) and clean(x.get("modelo"))]
+        r_people = {str(k): [clean(v) for v in vals if clean(v)] for k, vals in (resolved.get("people") or {}).items() if isinstance(vals, list)}
+        r_manufacturers = sorted({clean(v) for v in (resolved.get("manufacturers") or []) if clean(v)}, key=lambda x: x.upper())
+        r_observations = []
+        for item in resolved.get("observations") or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                oid = int(item.get("id") or item.get("codigo") or 0)
+            except Exception:
+                oid = 0
+            obs_text = clean(item.get("observacao") or item.get("texto"))
+            conclusion = clean(item.get("conclusao"))
+            if oid > 0 and (obs_text or conclusion):
+                r_observations.append({"id": oid, "observacao": obs_text, "conclusao": conclusion})
+        r_observations.sort(key=lambda x: int(x.get("id") or 0))
+        r_portarias = []
+        seen = set()
+        for value in resolved.get("portarias") or []:
+            text_value = clean(value)
+            if text_value and text_value.upper() not in seen:
+                seen.add(text_value.upper()); r_portarias.append(text_value)
+        if not r_portarias:
+            for item in r_observations:
+                text_value = clean(item.get("conclusao"))
+                if text_value and text_value.upper() not in seen:
+                    seen.add(text_value.upper()); r_portarias.append(text_value)
+        return r_models, r_observations, r_portarias, r_people, r_manufacturers, central
+
+    hidden = {k: {clean(v).upper() for v in vals if clean(v)} for k, vals in central.get("hidden", {}).items()}
+
+    # Modelos manuais do Painel substituem o modelo-base de mesmo nome.
+    model_map = {clean(m.get("modelo")).upper(): dict(m) for m in models if clean(m.get("modelo"))}
+    for item in central.get("models", []):
+        name = clean(item.get("modelo"))
+        if name:
+            model_map[name.upper()] = {**model_map.get(name.upper(), {}), **dict(item)}
+    models = sorted(model_map.values(), key=lambda x: (clean(x.get("modelo")).upper(), clean(x.get("fabricante")).upper()))
+
+    # Seletores do Cadastro de Novo Laudo são a fonte comum de Painel e APP.
+    manufacturer_hidden = hidden.get("fabricante", set())
+    man = [clean(v) for v in manufacturers if clean(v) and clean(v).upper() not in manufacturer_hidden]
+    man.extend(central.get("selectors", {}).get("fabricante", []))
+    manufacturers = sorted({v for v in man if clean(v)}, key=lambda x: x.upper())
+
+    people = {str(k): list(v or []) for k, v in (people or {}).items()}
+    for panel_key, app_key in BUILDER_SELECTOR_MAP.items():
+        denied = hidden.get(panel_key, set())
+        base = [clean(v) for v in people.get(app_key, []) if clean(v) and clean(v).upper() not in denied]
+        base.extend(central.get("selectors", {}).get(panel_key, []))
+        people[app_key] = sorted({v for v in base if clean(v)}, key=lambda x: x.upper())
+
+    # Frases personalizadas usam o mesmo código do Painel e sobrescrevem a base.
+    obs_map = {int(o.get("id") or 0): dict(o) for o in observations if int(o.get("id") or 0) > 0}
+    for item in central.get("phrases", []):
+        try:
+            code = int(item.get("codigo") or item.get("id") or 0)
+        except Exception:
+            code = 0
+        text_value = clean(item.get("texto") or item.get("observacao"))
+        if code > 0 and text_value:
+            obs_map[code] = {"id": code, "observacao": text_value, "conclusao": clean(item.get("conclusao"))}
+    observations = [obs_map[k] for k in sorted(obs_map)]
+
+    seen_port = {clean(v).upper() for v in portarias if clean(v)}
+    port_out = [clean(v) for v in portarias if clean(v)]
+    for item in central.get("portarias", []):
+        text_value = clean(item.get("texto") or item.get("conclusao"))
+        if text_value and text_value.upper() not in seen_port:
+            seen_port.add(text_value.upper()); port_out.append(text_value)
+    return models, observations, port_out, people, manufacturers, central
+
+
+@app.get("/api/catalog/builder")
+def api_catalog_builder(request: Request):
+    _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
+    return {"ok": True, **_central_builder_catalog()}
+
+
+@app.post("/api/catalog/builder/sync")
+def api_catalog_builder_sync(request: Request, payload: dict = Body(...)):
+    _require_admin(request)
+    data = _save_central_builder_catalog(payload or {})
+    _audit(request, "SINCRONIZOU_CADASTRO_CENTRAL", entity_type="CADASTRO", details={
+        "modelos": len(data.get("models") or []),
+        "frases": len(data.get("phrases") or []),
+        "portarias": len(data.get("portarias") or []),
+    })
+    return {"ok": True, **data}
+
 @app.get("/api/statuses")
 def statuses():
     return {
@@ -686,6 +836,9 @@ def bootstrap():
     portarias = list_observation_portarias()
     people = list_people()
     manufacturers = sorted({clean(m.get("fabricante")) for m in models if clean(m.get("fabricante"))})
+    models, observations, portarias, people, manufacturers, central = _merge_bootstrap_with_central(
+        models, observations, portarias, people, manufacturers
+    )
     return {
         "ok": True,
         "app": APP_NAME,
@@ -698,7 +851,8 @@ def bootstrap():
         "manufacturers": manufacturers,
         "counts": {"models": len(models), "observations": len(observations), "people": sum(len(v) for v in people.values())},
         "data_dir": str(app_data_dir()),
-        "source": ("ID CAMPS • POSTGRESQL" if USE_POSTGRES_CATALOG else f"ID CAMPS • {catalog_db_path().name}" + (" • SINCRONIZADO" if catalog_db_path() != BUNDLED_CATALOG_DB else " • BASE LOCAL")),
+        "source": ("ID CAMPS • POSTGRESQL • CADASTRO CENTRAL" if USE_POSTGRES_CATALOG else f"ID CAMPS • {catalog_db_path().name}" + (" • SINCRONIZADO" if catalog_db_path() != BUNDLED_CATALOG_DB else " • BASE LOCAL")),
+        "central_catalog": {"updated_at": central.get("updated_at", ""), "active": True},
         "backend": _runtime_backend_info(),
     }
 
@@ -716,7 +870,11 @@ def observations():
 @app.get("/api/records")
 def records(request: Request):
     profile_id, include_all = _record_scope(request)
-    return {"ok": True, "items": list_records(profile_id=profile_id, include_all=include_all)}
+    items = list_records(profile_id=profile_id, include_all=include_all)
+    archived = list_record_history_archived_ids(profile_id)
+    if archived:
+        items = [item for item in items if int(item.get("id") or 0) not in archived]
+    return {"ok": True, "items": items}
 
 @app.get("/api/notifications")
 def api_notifications(request: Request):
@@ -989,6 +1147,56 @@ def save(request: Request, payload: dict = Body(...)):
         if current.get("status") == STATUS_DEVOLVIDO:
             status = STATUS_DEVOLVIDO
     return {"ok": True, "item": save_record(data, record_id=record_id, status=status, created_by_profile_id=profile_id), "backend": _runtime_backend_info()}
+
+
+
+@app.post("/api/records/{record_id}/corrected")
+def corrected_record(record_id: int, request: Request, payload: dict = Body(...)):
+    """Reenvia uma correção usando o MESMO espelho/bridge.
+
+    Não cria um segundo registro. O endpoint é idempotente para evitar dois
+    envios quando o botão for tocado novamente ou houver repetição de rede.
+    """
+    profile = _require_roles(request, "ADMIN", "OPERADOR")
+    profile_id, include_all = _record_scope(request)
+    current = get_record(record_id, profile_id=profile_id, include_all=include_all)
+    if not current:
+        raise HTTPException(404, "Espelho não encontrado ou sem permissão para corrigir.")
+    data = dict(payload.get("data") or {})
+    if not data:
+        data = dict(current.get("payload") or {})
+    current_status = clean(current.get("status")).upper()
+    bridge = dict(data.get("_bridge") or current.get("payload", {}).get("_bridge") or {})
+    # Se a mesma correção já foi enviada, apenas devolve o registro atual.
+    if current_status in {STATUS_AGUARDANDO, STATUS_REVISAO} and clean(bridge.get("correction_sent_at")):
+        return {"ok": True, "record": current, "bridge_id": current.get("bridge_id") or bridge.get("id") or "", "deduplicated": True, "backend": _runtime_backend_info()}
+    if current_status != STATUS_DEVOLVIDO:
+        raise HTTPException(400, "Este laudo não está aguardando correção no aplicativo.")
+    bridge["correction_sent_at"] = datetime.now().isoformat(timespec="seconds")
+    bridge["correction_of_record_id"] = int(record_id)
+    data["_bridge"] = bridge
+    result = export_bridge(data, record_id=int(record_id), created_by_profile_id=int(profile.get("id") or 0))
+    # Mantém uma única notificação ativa do mesmo espelho. export_bridge já
+    # deduplica NOVO; este texto diferencia correção de envio inicial.
+    update_record_status(int(record_id), STATUS_AGUARDANDO, "Correção enviada pelo ID LAUDO.", clean(current.get("remote_laudo_numero")))
+    item = get_record(int(record_id), profile_id=profile_id, include_all=include_all) or result.get("record") or current
+    _audit(request, "REENVIOU_CORRECAO_APP", entity_type="ESPELHO", entity_id=record_id, numero_laudo=clean(item.get("numero_laudo")), details={"mesmo_registro": True, "bridge_id": item.get("bridge_id") or ""})
+    return {"ok": True, "record": item, "bridge_id": item.get("bridge_id") or result.get("bridge_id") or "", "deduplicated": False, "backend": _runtime_backend_info()}
+
+
+@app.delete("/api/records/{record_id}/history")
+def remove_from_history(record_id: int, request: Request):
+    profile = _require_roles(request, "ADMIN", "OPERADOR", "FUNCAO")
+    profile_id = int(profile.get("id") or 0)
+    current = get_record(record_id, profile_id=profile_id, include_all=(clean(profile.get("perfil")).upper() == "ADMIN"))
+    if not current:
+        raise HTTPException(404, "Laudo não encontrado no histórico.")
+    status = clean(current.get("status")).upper()
+    if status not in {STATUS_CRIADO, STATUS_BAIXADO}:
+        raise HTTPException(400, "Somente laudos concluídos podem ser excluídos do Histórico. Rascunhos e laudos em andamento devem permanecer no fluxo.")
+    archive_record_history(record_id, profile_id)
+    _audit(request, "EXCLUIU_DO_HISTORICO_APP", entity_type="ESPELHO", entity_id=record_id, numero_laudo=clean(current.get("numero_laudo")))
+    return {"ok": True, "record_id": int(record_id), "history_only": True}
 
 
 @app.delete("/api/records/{record_id}")

@@ -1,0 +1,30 @@
+SERVIDOR ID LAUDO — V1.0.0.53
+
+BASE: V1.0.0.52
+
+ALTERAÇÕES
+1. CADASTRO CENTRAL PAINEL + APP
+- Novo catálogo central armazenado no PostgreSQL/Supabase via app_settings.
+- GET /api/catalog/builder
+- POST /api/catalog/builder/sync (ADMIN)
+- /api/bootstrap mescla os cadastros enviados pelo Painel com a base do APP.
+- Modelos, fabricantes, pessoas, frases e portarias cadastrados pelo Painel passam a alimentar o APP.
+
+2. CORREÇÃO SEM DUPLICIDADE
+- POST /api/records/{id}/corrected atualiza o mesmo espelho/bridge.
+- Endpoint idempotente para impedir reenvio duplicado por toque duplo/repetição de rede.
+- A notificação ativa do mesmo espelho continua única.
+
+3. HISTÓRICO DO APP
+- DELETE /api/records/{id}/history oculta um laudo concluído somente do histórico do usuário.
+- O registro central, o laudo do Painel e a Auditoria não são apagados.
+- A lista de itens ocultos é persistida por usuário em app_settings.
+
+4. BIOMETRIA / SESSÃO
+- A interface web não manda mais desativar a biometria quando a sessão expira.
+- O usuário renova a sessão por senha uma vez e a preferência biométrica permanece ativa no APK V1.0.0.37.
+
+ORDEM RECOMENDADA
+1. Atualizar o Render para esta V1.0.0.53.
+2. Atualizar o Painel para V1.0.0.97.
+3. Atualizar o APP para V1.0.0.37.

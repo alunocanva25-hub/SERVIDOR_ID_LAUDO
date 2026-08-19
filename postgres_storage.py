@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 APP_NAME = "ID LAUDO"
-APP_VERSION = "1.0.0.52"
+APP_VERSION = "1.0.0.53"
 
 STATUS_RASCUNHO = "RASCUNHO"
 STATUS_PRONTO = "PRONTO_PARA_ID_CAMPS"
@@ -935,6 +935,38 @@ def set_app_setting(key: str, value) -> None:
             con.execute(update(app_settings).where(app_settings.c.key == str(key)).values(value_json=value, updated_at=now))
         else:
             con.execute(insert(app_settings).values(key=str(key), value_json=value, updated_at=now))
+
+
+
+# V1.0.0.53 — histórico do APP é independente do registro central.
+# Excluir do Histórico apenas oculta o item para o usuário logado; o espelho
+# continua disponível para o fluxo do Painel e para auditoria.
+def _history_archive_key(profile_id: int) -> str:
+    return f"app_history_archived_v1:{int(profile_id)}"
+
+
+def list_record_history_archived_ids(profile_id: int | None) -> set[int]:
+    if not profile_id:
+        return set()
+    raw = get_app_setting(_history_archive_key(int(profile_id)), [])
+    if not isinstance(raw, list):
+        return set()
+    out = set()
+    for value in raw:
+        try:
+            out.add(int(value))
+        except Exception:
+            pass
+    return out
+
+
+def archive_record_history(record_id: int, profile_id: int | None) -> bool:
+    if not profile_id:
+        return False
+    ids = list_record_history_archived_ids(int(profile_id))
+    ids.add(int(record_id))
+    set_app_setting(_history_archive_key(int(profile_id)), sorted(ids))
+    return True
 
 
 def safe_component(value: object, fallback: str = "SEM-DADO") -> str:
